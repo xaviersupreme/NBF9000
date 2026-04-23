@@ -15,7 +15,7 @@ loadstring(game:HttpGet("https://github.com/xaviersupreme/nanny-bean-flicker-900
 - shitty optimization
 
 ## Pictures
-   <img src="./assets/Intro.gif" alt="f" width="350"/> <img src="./assets/flingexample.gif" alt="f" width="510"/>
+   <img src="./assets/Intro.gif" alt="f" width="350"/> <img src="./assets/flingexample.gif" alt="f" width="450"/>
 
 ## Building
 ```sh
