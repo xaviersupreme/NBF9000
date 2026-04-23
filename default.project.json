@@ -2,9 +2,6 @@
   "name": "roblox",
   "tree": {
     "$className": "DataModel",
-    "include": {
-      "$path": "include"
-    },
     "StarterPlayer": {
       "$className": "StarterPlayer",
       "StarterPlayerScripts": {

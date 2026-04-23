@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "build": "rbxtsc --type package --luau"
+    "build": "rbxtsc --type package --luau && node -e \"require('fs').rmSync('out/assets',{recursive:true,force:true})\""
 	},
 	"devDependencies": {
 		"@rbxts/compiler-types": "^3.0.0-types.0",

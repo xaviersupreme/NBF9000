@@ -3,6 +3,7 @@ declare function sethiddenproperty(obj: Instance, prop: string, val: unknown): v
 declare function getcustomasset(path: string): string;
 declare function getsynasset(path: string): string;
 declare function isfile(path: string): boolean;
+declare function readfile(path: string): string;
 declare function writefile(path: string, data: string): void;
 declare function makefolder(path: string): void;
 
@@ -195,6 +196,8 @@ function makeIntroText(parent: Instance, s: string, size: number, y: number, hig
 function customAsset(path: string) {
 	const [hasFile, fileOk] = pcall(() => isfile(path));
 	if (hasFile && fileOk) {
+		const [readOk, data] = pcall(() => readfile(path));
+		if (readOk && typeIs(data, "string") && data.size() < 100000) return;
 		const [ok, id] = pcall(() => getcustomasset(path));
 		if (ok && typeIs(id, "string") && id.size() > 0) return id;
 		const [synOk, synId] = pcall(() => getsynasset(path));
@@ -203,17 +206,22 @@ function customAsset(path: string) {
 }
 
 function introAsset() {
-	const path = "ClickFling/foreign.mp3";
-	pcall(() => makefolder("ClickFling"));
-	const [existsOk, exists] = pcall(() => isfile(path));
-	if (!(existsOk && exists)) {
-		pcall(() => {
-			const httpGet = (game as unknown as { [key: string]: (self: DataModel, url: string) => string })["HttpGet"];
-			const data = httpGet(game, "https://cdn.discordapp.com/attachments/1262369924655874139/1496746583197487184/foreign1.mp3?ex=69eb0161&is=69e9afe1&hm=19526e4cb4f4c8b206c44e9c2ca40566ca4c7a6b845e0ba85679d45c3dca9e7e&");
-			writefile(path, data);
-		});
+	const path = "assets/foreign.mp3";
+	for (const p of [path, "foreign.mp3", "ClickFling/foreign.mp3"]) {
+		const asset = customAsset(p);
+		if (asset) return asset;
 	}
-	return customAsset(path) ?? customAsset("foreign.mp3");
+
+	pcall(() => {
+		pcall(() => makefolder("assets"));
+		const httpGet = (game as unknown as { [key: string]: (self: DataModel, url: string) => string })["HttpGet"];
+		const data = httpGet(game, "https://raw.githubusercontent.com/xaviersupreme/nanny-bean-flicker-9000/main/assets/foreign.mp3");
+		if (data.size() > 100000) writefile(path, data);
+	});
+
+	const asset = customAsset(path);
+	if (!asset) warn("ClickFling intro sound missing: assets/foreign.mp3 did not download or is not a valid mp3");
+	return asset;
 }
 
 function playIntro() {
@@ -712,30 +720,44 @@ function bodyPart(char: Model) {
 	return best ?? root;
 }
 
-function repPart(tgt: Tgt) {
+function flingPart(tgt: Tgt) {
 	if (typeIs(tgt, "Instance")) {
 		if (tgt.IsA("Model")) {
-			const [, root] = charParts(tgt);
-			return root ?? bodyPart(tgt);
+			const root = tgt.FindFirstChild("HumanoidRootPart");
+			if (root && root.IsA("BasePart")) return root;
+			if (tgt.PrimaryPart) return tgt.PrimaryPart;
+			const part = tgt.FindFirstChildWhichIsA("BasePart");
+			return part?.IsA("BasePart") ? part : undefined;
 		}
-		if (tgt.IsA("BasePart")) {
-			const char = charFromPart(tgt);
-			if (char) {
-				const [, root] = charParts(char);
-				return root ?? tgt;
-			}
-			return tgt;
-		}
+		if (tgt.IsA("BasePart")) return tgt;
 	}
 }
 
 function predict(tgt: Tgt): LuaTuple<[CFrame, boolean]> {
 	if (typeIs(tgt, "Instance")) {
-		const part = getPart(tgt);
+		const part = flingPart(tgt);
 		if (part) {
 			if (!part.IsDescendantOf(world)) return $tuple(CFrame.identity, true);
 
+			const t = os.clock();
+			const t2 = math.sin(t * 15) + 1;
 			let cf = part.CFrame.mul(CFrame.Angles(1.57, 0, 0)) as CFrame;
+			if (method !== "weld") {
+				cf = cf.add(part.AssemblyLinearVelocity.mul(t2).add(
+					new Vector3(0, -world.Gravity * 0.5 * t2 * t2 + math.sin(t * 60), 0),
+				));
+				if (cf.Position.Y < part.Position.Y - 1) {
+					cf = cf.Rotation.add(new Vector3(cf.Position.X, part.Position.Y - 1, cf.Position.Z));
+				}
+			}
+
+			const oldPos = part.GetAttribute("_Uhhhhhh_LastPosition");
+			if (!typeIs(oldPos, "Vector3")) {
+				part.SetAttribute("_Uhhhhhh_LastPosition", part.Position);
+			} else if (part.Position.sub(oldPos).Magnitude > 200) {
+				part.SetAttribute("_Uhhhhhh_LastPosition", undefined);
+				return $tuple(cf, true);
+			}
 
 			return $tuple(cf, false);
 		}
@@ -946,13 +968,13 @@ function nextItem() {
 
 function doFling(rp: BasePart, hum: Humanoid, tgt: Tgt, cf: CFrame) {
 	const tp = getPart(tgt);
-	const rep = repPart(tgt) ?? tp;
+	const rep = flingPart(tgt) ?? tp;
 	if (method === "weld" && !tp) return;
 
 	if (!rp.IsGrounded()) {
 		if (method === "weld") {
 			sethiddenproperty(rp, "PhysicsRepRootPart", rep);
-			rp.CFrame = tp!.CFrame.add(new Vector3(0, 0, math.random(0, 1) * 0.005)) as CFrame;
+			rp.CFrame = cf.add(new Vector3(0, 0, math.random(0, 1) * 0.005)) as CFrame;
 		} else {
 			rp.CFrame = new CFrame(cf.Position.add(new Vector3(0, 0, math.random(0, 1) * 0.005))).mul(CFrame.Angles(0, os.clock() * 15, 0)) as CFrame;
 			pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));

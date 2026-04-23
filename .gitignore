@@ -6,7 +6,7 @@ out/
 *.rbxm
 *.rbxmx
 
-foreign.mp3
+x.lua
 
 .DS_Store
 Thumbs.db
