@@ -1,8 +1,7 @@
 # <p align="center">nanny bean flicker 9000</p>
+<p align="center">NaN click fling witha cool ass intro 😎</p>
 
 This is the official source repository for the script.
-
-**NOTICE:** this is still being worked on stuff will change.
 
 ## Loadstring
 Use the latest release build:
