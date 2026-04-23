@@ -1,0 +1,12 @@
+node_modules/
+out/
+
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+foreign.mp3
+
+.DS_Store
+Thumbs.db
