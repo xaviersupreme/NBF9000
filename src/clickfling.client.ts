@@ -1,4 +1,4 @@
-declare function getgenv(): { ClickFling?: Runtime };
+declare function getgenv(): { nbf9000?: Runtime };
 declare function sethiddenproperty(obj: Instance, prop: string, val: unknown): void;
 declare function getcustomasset(path: string): string;
 declare function getsynasset(path: string): string;
@@ -14,8 +14,8 @@ interface Runtime {
 	stop?: () => void;
 	fling?: (tgt: Tgt, dur?: number) => boolean | undefined;
 	clear?: () => void;
-	oldDestroyH?: number;
-	ghost?: Model;
+	oldDestroyHeight?: number;
+	sessionModel?: Model;
 	util?: {
 		predict?: (tgt: Tgt) => LuaTuple<[CFrame, boolean]>;
 		getPart?: (tgt: Tgt) => BasePart | undefined;
@@ -48,12 +48,14 @@ const anims = {
 	R6: {
 		idle: "rbxassetid://180435571",
 		walk: "rbxassetid://180426354",
+		run: "rbxassetid://180426354",
 		jump: "rbxassetid://125750702",
 		fall: "rbxassetid://180436148",
 	},
 	R15: {
 		idle: "rbxassetid://507766666",
 		walk: "rbxassetid://507777826",
+		run: "rbxassetid://507767714",
 		jump: "rbxassetid://507765000",
 		fall: "rbxassetid://507767968",
 	},
@@ -72,12 +74,12 @@ const localPlayer = players.LocalPlayer;
 const mouse = localPlayer.GetMouse();
 let cam = world.CurrentCamera;
 
-const oldRuntime = getgenv().ClickFling;
+const oldRuntime = getgenv().nbf9000;
 let oldStop: (() => void) | undefined;
 let oldDestroyHeight = world.FallenPartsDestroyHeight;
 if (oldRuntime) {
 	oldStop = oldRuntime.stop;
-	if (oldRuntime.oldDestroyH !== undefined) oldDestroyHeight = oldRuntime.oldDestroyH;
+	if (oldRuntime.oldDestroyHeight !== undefined) oldDestroyHeight = oldRuntime.oldDestroyHeight;
 }
 const originalDestroyHeight = oldDestroyHeight !== oldDestroyHeight ? -500 : oldDestroyHeight; // this is a really cursed way to check for NaN but it works and it's late
 let destroyHeightSet = false;
@@ -102,15 +104,16 @@ const savedTransparency = new Map<BasePart, number>();
 const savedCollision = new Map<BasePart, boolean>();
 const targetCollision = new Map<BasePart, boolean>();
 
-let ghost: Model | undefined;
-let hrp: BasePart | undefined;
-let hrpOutline: SelectionBox | undefined;
-let hrpTick = os.clock();
+let sessionModel: Model | undefined;
+let guidePart: BasePart | undefined;
+let guideOutline: SelectionBox | undefined;
+let guideTick = os.clock();
 let introGui: ScreenGui | undefined;
 let introConn: RBXScriptConnection | undefined;
 let introSound: Sound | undefined;
-let hiddenChar: Model | undefined;
 let savedHumanoidState: SavedHumanoidState | undefined;
+let maskedChar: Model | undefined;
+let deathConn: RBXScriptConnection | undefined;
 let busy = false;
 let lastInput: InputObject | undefined;
 let lastWasGui = false;
@@ -132,7 +135,7 @@ function wrap(n: number) {
 	return ((n % 1) + 1) % 1;
 }
 
-function tokyoColor(n: number) {
+function accentColor(n: number) {
 	const x = wrap(n) * 5;
 	const i = math.floor(x);
 	const a = x - i;
@@ -143,7 +146,7 @@ function tokyoColor(n: number) {
 	return Color3.fromRGB(224, 175, 104).Lerp(Color3.fromRGB(122, 162, 247), a);
 }
 
-function tokyoSeq() {
+function accentSequence() {
 	return new ColorSequence([
 		new ColorSequenceKeypoint(0, Color3.fromRGB(122, 162, 247)),
 		new ColorSequenceKeypoint(0.26, Color3.fromRGB(125, 207, 255)),
@@ -153,9 +156,9 @@ function tokyoSeq() {
 	]);
 }
 
-function tokyoGradient(parent: GuiObject, rot = 0) {
+function accentGradient(parent: GuiObject, rot = 0) {
 	const g = new Instance("UIGradient");
-	g.Color = tokyoSeq();
+	g.Color = accentSequence();
 	g.Rotation = rot;
 	g.Parent = parent;
 	return g;
@@ -167,11 +170,34 @@ function charParts(char?: Model): LuaTuple<[Humanoid | undefined, BasePart | und
 	return $tuple(hum, rp?.IsA("BasePart") ? rp : undefined);
 }
 
-function dropHrp() {
-	if (hrpOutline) hrpOutline.Destroy();
-	if (hrp) hrp.Destroy();
-	hrpOutline = undefined;
-	hrp = undefined;
+function isDead(hum?: Humanoid) {
+	if (!hum) return false;
+	return hum.Health <= 0 || hum.GetState() === Enum.HumanoidStateType.Dead;
+}
+
+function clearGuide() {
+	if (guideOutline) guideOutline.Destroy();
+	if (guidePart) guidePart.Destroy();
+	guideOutline = undefined;
+	guidePart = undefined;
+}
+
+function releaseGuide() {
+	const p = guidePart;
+	if (!p) return;
+	guidePart = undefined;
+	guideOutline = undefined;
+	guideTick = os.clock();
+	p.Anchored = false;
+	p.Massless = false;
+	p.CanCollide = false;
+	p.CanTouch = false;
+	p.CanQuery = false;
+	p.AssemblyLinearVelocity = new Vector3(0, -135, 0);
+	p.AssemblyAngularVelocity = new Vector3(math.random(-14, 14), math.random(-22, 22), math.random(-14, 14));
+	p.Velocity = p.AssemblyLinearVelocity;
+	p.RotVelocity = p.AssemblyAngularVelocity;
+	debrisService.AddItem(p, 2.5);
 }
 
 function killIntro() {
@@ -219,7 +245,7 @@ function customAsset(path: string) { // this is really bad ngl, but it allows fo
 
 function introAsset() {
 	const path = "assets/foreign.mp3";
-	for (const p of [path, "foreign.mp3", "ClickFling/foreign.mp3"]) {
+	for (const p of [path]) {
 		const asset = customAsset(p);
 		if (asset) return asset;
 	}
@@ -232,7 +258,7 @@ function introAsset() {
 	});
 
 	const asset = customAsset(path);
-	if (!asset) warn("ClickFling intro sound missing: assets/foreign.mp3 did not download or is not a valid mp3");
+	if (!asset) warn("nbf9000 intro sound missing: assets/foreign.mp3 did not download or is not a valid mp3");
 	return asset;
 }
 
@@ -241,7 +267,7 @@ function playIntro() {
 
 	const pg = localPlayer.WaitForChild("PlayerGui") as PlayerGui;
 	const screenGui = new Instance("ScreenGui");
-	screenGui.Name = "ClickFlingIntro";
+	screenGui.Name = "nbf9000Intro";
 	screenGui.IgnoreGuiInset = true;
 	screenGui.ResetOnSpawn = false;
 	screenGui.DisplayOrder = 2147483647;
@@ -280,6 +306,32 @@ function playIntro() {
 	shade.ZIndex = 1;
 	shade.Parent = screenGui;
 
+	const borderFrames = new Array<Frame>();
+	const borderGrads = new Array<UIGradient>();
+	const borderSpecs = [
+		{ pos: new UDim2(0, 0, 0, 0), size: new UDim2(1, 0, 0, 2), rot: 0 },
+		{ pos: new UDim2(0, 0, 1, -2), size: new UDim2(1, 0, 0, 2), rot: 180 },
+		{ pos: new UDim2(0, 0, 0, 0), size: new UDim2(0, 2, 1, 0), rot: 90 },
+		{ pos: new UDim2(1, -2, 0, 0), size: new UDim2(0, 2, 1, 0), rot: 270 },
+	];
+	for (const spec of borderSpecs) {
+		const frame = new Instance("Frame");
+		frame.Position = spec.pos;
+		frame.Size = spec.size;
+		frame.BackgroundColor3 = new Color3(1, 1, 1);
+		frame.BackgroundTransparency = 0.18;
+		frame.BorderSizePixel = 0;
+		frame.ZIndex = 2;
+		frame.Parent = screenGui;
+		borderFrames.push(frame);
+
+		const grad = new Instance("UIGradient");
+	grad.Color = accentSequence();
+		grad.Rotation = spec.rot;
+		grad.Parent = frame;
+		borderGrads.push(grad);
+	}
+
 	const card = new Instance("Frame");
 	card.AnchorPoint = new Vector2(0.5, 0.5);
 	card.Position = UDim2.fromScale(0.5, 0.5);
@@ -306,7 +358,7 @@ function playIntro() {
 	stroke.Parent = card;
 
 	const edge = new Instance("UIGradient");
-	edge.Color = tokyoSeq();
+	edge.Color = accentSequence();
 	edge.Parent = stroke;
 
 	const top = new Instance("Frame");
@@ -317,13 +369,13 @@ function playIntro() {
 	top.ZIndex = 4;
 	top.Parent = card;
 
-	const title = makeIntroText(card, "CLICK FLING", 28, 45, true);
+	const title = makeIntroText(card, "nanny bean flicker 9000", 28, 45, true);
 	const sub = makeIntroText(card, ":3 :3 :3 :3 :3 :3 :3", 13, 78);
 	sub.TextTransparency = 0.12;
 	const boot = makeIntroText(card, "ctrl+mb1 / tap player", 12, 100);
 	boot.TextTransparency = 0.38;
-	const titleGrad = tokyoGradient(title);
-	const subGrad = tokyoGradient(sub);
+	const titleGrad = accentGradient(title);
+	const subGrad = accentGradient(sub);
 
 	const barBox = new Instance("Frame");
 	barBox.AnchorPoint = new Vector2(0.5, 1);
@@ -378,15 +430,26 @@ function playIntro() {
 	let closing = false;
 	introConn = runService.RenderStepped.Connect(() => {
 		const t = os.clock() - start;
+		const loud = introSound ? math.clamp(introSound.PlaybackLoudness / 650, 0, 1) : 0.35;
+		const borderThick = math.floor(2 + loud * 2);
+		borderFrames[0].Size = new UDim2(1, 0, 0, borderThick);
+		borderFrames[1].Position = new UDim2(0, 0, 1, -borderThick);
+		borderFrames[1].Size = new UDim2(1, 0, 0, borderThick);
+		borderFrames[2].Size = new UDim2(0, borderThick, 1, 0);
+		borderFrames[3].Position = new UDim2(1, -borderThick, 0, 0);
+		borderFrames[3].Size = new UDim2(0, borderThick, 1, 0);
+		for (const [i, grad] of ipairs(borderGrads)) {
+			grad.Offset = new Vector2(math.sin(t * 0.42 + i * 0.6) * 0.18, math.cos(t * 0.31 + i * 0.45) * 0.08);
+		}
+		for (const frame of borderFrames) frame.BackgroundTransparency = 0.24 - loud * 0.08;
 		edge.Rotation = (edge.Rotation + 1.4) % 360;
-		edge.Offset = new Vector2(math.sin(os.clock() * 0.26) * 0.25, 0);
-		const textOffset = new Vector2(math.sin(os.clock() * 4) * 0.28, 0);
+		edge.Offset = new Vector2(math.sin(t * 0.26) * 0.25, 0);
+		const textOffset = new Vector2(math.sin(t * 4) * 0.28, 0);
 		titleGrad.Offset = textOffset;
 		subGrad.Offset = textOffset;
 		boot.TextColor3 = Color3.fromRGB(170, 170, 176);
 		if (t - lastBar > 0.055) {
 			lastBar = t;
-			const loud = introSound ? math.clamp(introSound.PlaybackLoudness / 650, 0, 1) : 0.35;
 			for (let i = 0; i < bars.size(); i++) {
 				const wave = math.abs(math.sin(t * 5.5 + i * 0.42));
 				barGoal[i] = 6 + math.random(0, 12) + wave * 8 + loud * (14 + wave * 30 + math.random(0, 12));
@@ -395,7 +458,7 @@ function playIntro() {
 		for (const [i, bar] of ipairs(bars)) {
 			const h = barGoal[i - 1] ?? 8;
 			bar.Size = new UDim2(0, 7, 0, h);
-			bar.BackgroundColor3 = tokyoColor(os.clock() * 0.32 + i * 0.065);
+			bar.BackgroundColor3 = accentColor(t * 0.32 + i * 0.065);
 		}
 		if (t > 2.75 && introGui && !closing) {
 			closing = true;
@@ -403,11 +466,12 @@ function playIntro() {
 			introConn = undefined;
 			if (con) con.Disconnect();
 			flash.BackgroundTransparency = 0;
+			shade.BackgroundTransparency = 1;
+			for (const frame of borderFrames) frame.BackgroundTransparency = 1;
+			card.BackgroundTransparency = 1;
+			top.BackgroundTransparency = 1;
 			tweenService.Create(flash, new TweenInfo(0.22), { BackgroundTransparency: 1 }).Play();
-			tweenService.Create(shade, new TweenInfo(0.28), { BackgroundTransparency: 1 }).Play();
 			tweenService.Create(stroke, new TweenInfo(0.22), { Transparency: 1 }).Play();
-			tweenService.Create(card, new TweenInfo(0.22, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { BackgroundTransparency: 1 }).Play();
-			tweenService.Create(top, new TweenInfo(0.22), { BackgroundTransparency: 1 }).Play();
 			for (const label of [title, sub, boot]) {
 				tweenService.Create(label, new TweenInfo(0.18), {
 					TextTransparency: 1,
@@ -440,17 +504,18 @@ function playIntro() {
 	});
 }
 
-function updateHrp() {
-	const [, gRoot] = charParts(ghost);
-	const [, rp] = charParts(localPlayer.Character);
-	const root = busy ? rp : (gRoot ?? rp);
-	if (!root) { dropHrp(); return; }
+function updateGuide() {
+	const [hum, rp] = charParts(localPlayer.Character);
+	if (isDead(hum)) { releaseGuide(); return; }
+	const [, sessionRoot] = charParts(sessionModel);
+	const root = busy ? rp : (sessionRoot ?? rp);
+	if (!root) { clearGuide(); return; }
 
 	const t = os.clock();
 	const spin = CFrame.Angles(t * 90, t * 130, t * 70);
 	const wanted = root.CFrame.mul(spin) as CFrame;
 
-	if (!hrp) {
+	if (!guidePart) {
 		const p = new Instance("Part");
 		p.Name = "HRP";
 		p.Size = new Vector3(2, 2, 1);
@@ -470,26 +535,26 @@ function updateHrp() {
 		box.Parent = p;
 
 		p.Parent = world;
-		hrp = p;
-		hrpOutline = box;
-		hrpTick = t;
+		guidePart = p;
+		guideOutline = box;
+		guideTick = t;
 	}
 
-	const dt = math.min(t - hrpTick, 1 / 15);
-	hrpTick = t;
+	const dt = math.min(t - guideTick, 1 / 15);
+	guideTick = t;
 
-	const diff = wanted.Position.sub(hrp.Position);
+	const diff = wanted.Position.sub(guidePart.Position);
 	const dist = diff.Magnitude;
 
 	if (dist > 3) {
 		const move = math.min(dist, math.max(650, dist * 40) * dt);
-		const pos = hrp.Position.add(diff.Unit.mul(move));
-		hrp.CFrame = new CFrame(pos).mul(wanted.Rotation) as CFrame;
+		const pos = guidePart.Position.add(diff.Unit.mul(move));
+		guidePart.CFrame = new CFrame(pos).mul(wanted.Rotation) as CFrame;
 	} else {
-		hrp.CFrame = wanted;
+		guidePart.CFrame = wanted;
 	}
 
-	if (hrpOutline) hrpOutline.Color3 = tokyoColor(os.clock() * 0.55);
+	if (guideOutline) guideOutline.Color3 = accentColor(os.clock() * 0.55);
 }
 
 function resetRoot() {
@@ -539,7 +604,7 @@ function restoreAlpha() {
 	}
 	savedTransparency.clear();
 	savedCollision.clear();
-	hiddenChar = undefined;
+	maskedChar = undefined;
 }
 
 function restoreTargetCollision() {
@@ -552,7 +617,7 @@ function restoreTargetCollision() {
 function noCollideTarget(tgt: Tgt) {
 	if (!typeIs(tgt, "Instance")) return;
 	const char = tgt.IsA("Model") ? tgt : (tgt.IsA("BasePart") ? charFromPart(tgt) : undefined);
-	if (!char || char === localPlayer.Character || char === ghost) return;
+	if (!char || char === localPlayer.Character || char === sessionModel) return;
 	for (const obj of char.GetDescendants()) {
 		if (obj.IsA("BasePart")) {
 			if (!targetCollision.has(obj)) targetCollision.set(obj, obj.CanCollide);
@@ -561,10 +626,10 @@ function noCollideTarget(tgt: Tgt) {
 	}
 }
 
-function hideChar(char?: Model) {
+function maskChar(char?: Model) {
 	if (!char) return;
-	if (hiddenChar === char) return;
-	hiddenChar = char;
+	if (maskedChar === char) return;
+	maskedChar = char;
 	for (const obj of char.GetDescendants()) {
 		if (obj.IsA("BasePart")) {
 			if (!savedTransparency.has(obj)) savedTransparency.set(obj, obj.LocalTransparencyModifier);
@@ -577,18 +642,18 @@ function hideChar(char?: Model) {
 	}
 }
 
-function killGhost(sync: boolean) {
-	const g = ghost;
-	const [, gRoot] = charParts(g);
+function clearSessionModel(sync: boolean) {
+	const model = sessionModel;
+	const [, sessionRoot] = charParts(model);
 	const [hum, rp] = charParts(localPlayer.Character);
-	const retCf = sync && gRoot ? gRoot.CFrame : undefined;
-	const retVel = sync && gRoot ? gRoot.AssemblyLinearVelocity : Vector3.zero;
+	const retCf = sync && sessionRoot ? sessionRoot.CFrame : undefined;
+	const retVel = sync && sessionRoot ? sessionRoot.AssemblyLinearVelocity : Vector3.zero;
 
 	busy = false;
 
-	if (g) g.Destroy();
-	ghost = undefined;
-	runtime.ghost = undefined;
+	if (model) model.Destroy();
+	sessionModel = undefined;
+	runtime.sessionModel = undefined;
 	restoreTargetCollision();
 	restoreAlpha();
 	resetRoot();
@@ -606,18 +671,46 @@ function killGhost(sync: boolean) {
 	if (hum && cam) cam.CameraSubject = hum;
 }
 
+function dropDeadChar(char?: Model) {
+	if (!char) return;
+	queue.clear();
+	cooldowns.clear();
+	busy = false;
+	releaseGuide();
+	clearSessionModel(false);
+}
+
 function stop() {
 	for (const c of connections) c.Disconnect();
 	connections.clear();
+	if (deathConn) {
+		deathConn.Disconnect();
+		deathConn = undefined;
+	}
 	queue.clear();
 	cooldowns.clear();
-	runService.UnbindFromRenderStep("ClickFling");
-	killGhost(false);
-	dropHrp();
+	runService.UnbindFromRenderStep("nbf9000");
+	clearSessionModel(false);
+	clearGuide();
 	killIntro();
 }
 
-function cleanGhost(char: Model) {
+function bindCharacter(char?: Model) {
+	if (deathConn) {
+		deathConn.Disconnect();
+		deathConn = undefined;
+	}
+	setDestroyH(originalDestroyHeight);
+	destroyHeightSet = false;
+	if (!char) return;
+	const hum = char.FindFirstChildOfClass("Humanoid");
+	if (!hum) return;
+	deathConn = hum.Died.Connect(() => {
+		dropDeadChar(char);
+	});
+}
+
+function prepareSessionModel(char: Model) {
 	for (const obj of char.GetDescendants()) {
 		if (obj.IsA("Script") || obj.IsA("LocalScript") || obj.IsA("Animator")) {
 			obj.Destroy();
@@ -635,7 +728,7 @@ function cleanGhost(char: Model) {
 	}
 }
 
-function mkTrack(anim: Animator, id: string, pri: Enum.AnimationPriority, loop: boolean) {
+function createTrack(anim: Animator, id: string, pri: Enum.AnimationPriority, loop: boolean) {
 	const a = new Instance("Animation");
 	a.AnimationId = id;
 	const [ok, t] = pcall(() => anim.LoadAnimation(a));
@@ -647,59 +740,90 @@ function mkTrack(anim: Animator, id: string, pri: Enum.AnimationPriority, loop: 
 	}
 }
 
-function animGhost(char: Model, hum: Humanoid) {
+function animNodeId(node: Instance | undefined, fallback: string) {
+	if (node?.IsA("Animation")) {
+		return node.AnimationId.size() > 0 ? node.AnimationId : fallback;
+	}
+	if (node) {
+		for (const child of node.GetChildren()) {
+			if (child.IsA("Animation") && child.AnimationId.size() > 0) return child.AnimationId;
+		}
+	}
+	return fallback;
+}
+
+function resolveAnimSet(char: Model | undefined, rig: Enum.HumanoidRigType) {
+	const fallback = rig === Enum.HumanoidRigType.R15 ? anims.R15 : anims.R6;
+	const animate = char?.FindFirstChild("Animate");
+	if (!animate) return fallback;
+	return {
+		idle: animNodeId(animate.FindFirstChild("idle"), fallback.idle),
+		walk: animNodeId(animate.FindFirstChild("walk"), fallback.walk),
+		run: animNodeId(animate.FindFirstChild("run"), fallback.run),
+		jump: animNodeId(animate.FindFirstChild("jump"), fallback.jump),
+		fall: animNodeId(animate.FindFirstChild("fall"), fallback.fall),
+	};
+}
+
+function animateSessionModel(char: Model, hum: Humanoid, sourceChar?: Model) {
 	const anim = new Instance("Animator");
 	anim.Parent = hum;
 
-	const set = hum.RigType === Enum.HumanoidRigType.R15 ? anims.R15 : anims.R6;
-	const tr = {
-		idle: mkTrack(anim, set.idle, Enum.AnimationPriority.Idle, true),
-		walk: mkTrack(anim, set.walk, Enum.AnimationPriority.Movement, true),
-		jump: mkTrack(anim, set.jump, Enum.AnimationPriority.Action, false),
-		fall: mkTrack(anim, set.fall, Enum.AnimationPriority.Action, true),
+	const set = resolveAnimSet(sourceChar, hum.RigType);
+	const tracks = {
+		idle: createTrack(anim, set.idle, Enum.AnimationPriority.Idle, true),
+		walk: createTrack(anim, set.walk, Enum.AnimationPriority.Movement, true),
+		run: createTrack(anim, set.run, Enum.AnimationPriority.Movement, true),
+		jump: createTrack(anim, set.jump, Enum.AnimationPriority.Action, false),
+		fall: createTrack(anim, set.fall, Enum.AnimationPriority.Action, true),
 	};
 
-	let cur: keyof typeof tr | undefined;
-	function play(name: keyof typeof tr, fade: number) {
-		if (cur === name) return;
-		if (cur && tr[cur]) tr[cur]!.Stop(fade);
-		cur = name;
-		tr[name]?.Play(fade);
+	let currentTrack: keyof typeof tracks | undefined;
+	function play(name: keyof typeof tracks, fade: number) {
+		if (currentTrack === name) return;
+		if (currentTrack && tracks[currentTrack]) tracks[currentTrack]!.Stop(fade);
+		currentTrack = name;
+		tracks[name]?.Play(fade);
+	}
+
+	function playMove() {
+		const speed = hum.WalkSpeed * math.min(keys.move.Magnitude, 1);
+		const name = speed > 10 && tracks.run ? "run" : "walk";
+		play(name, 0.15);
+		tracks[name]?.AdjustSpeed(math.max(speed / 16, 0.1));
 	}
 
 	let cn: RBXScriptConnection;
 	cn = runService.PreAnimation.Connect(() => {
-		if (!ghost || !ghost.Parent || !hum.Parent) { cn.Disconnect(); return; }
+		if (!sessionModel || !sessionModel.Parent || !hum.Parent) { cn.Disconnect(); return; }
 		const st = hum.GetState();
 		if (busy) {
 			if (keys.move.Magnitude > 0.05) {
-				play("walk", 0.15);
-				tr.walk?.AdjustSpeed(math.max(hum.WalkSpeed / 16, 0.1));
+				playMove();
 			} else play("idle", 0.2);
 		} else if (st === Enum.HumanoidStateType.Jumping) {
 			play("jump", 0.1);
 		} else if (st === Enum.HumanoidStateType.Freefall || st === Enum.HumanoidStateType.FallingDown) {
 			play("fall", 0.2);
 		} else if (keys.move.Magnitude > 0.05) {
-			play("walk", 0.15);
-			tr.walk?.AdjustSpeed(math.max(hum.WalkSpeed / 16, 0.1));
+			playMove();
 		} else play("idle", 0.2);
 	});
 
 	char.Destroying.Once(() => {
 		cn.Disconnect();
-		for (const [, t] of pairs(tr)) {
+		for (const [, t] of pairs(tracks)) {
 			if (t) { t.Stop(0); t.Destroy(); }
 		}
 	});
 }
 
-function spawnGhost() {
+function spawnSessionModel() {
 	const char = localPlayer.Character;
 	const [, rp] = charParts(char);
 	if (!char || !rp) return;
 
-	if (ghost) ghost.Destroy();
+	if (sessionModel) sessionModel.Destroy();
 
 	const arc = char.Archivable;
 	char.Archivable = true;
@@ -707,45 +831,42 @@ function spawnGhost() {
 	char.Archivable = arc;
 	if (!g) return;
 
-	g.Name = "the real israeli femboy jewmaxxer"; // gotta flex on em
-	cleanGhost(g);
+	g.Name = "nbf9000Rig";
+	prepareSessionModel(g);
 	g.Parent = world;
 	g.PivotTo(rp.CFrame);
 
-	const [gHum, gRoot] = charParts(g);
-	if (!gHum || !gRoot) { g.Destroy(); return; }
+	const [sessionHum, sessionRoot] = charParts(g);
+	if (!sessionHum || !sessionRoot) { g.Destroy(); return; }
 
-	gHum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None;
-	gHum.RequiresNeck = false;
-	gHum.BreakJointsOnDeath = false;
-	gHum.UseJumpPower = true;
-	gHum.WalkSpeed = math.max(gHum.WalkSpeed, 16);
-	gHum.JumpPower = math.max(gHum.JumpPower, 50);
-	gHum.Health = gHum.MaxHealth;
-	gHum.AutoRotate = true;
-	gHum.SetStateEnabled(Enum.HumanoidStateType.Dead, false);
-	gRoot.RootPriority = 67;
+	sessionHum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None;
+	sessionHum.RequiresNeck = false;
+	sessionHum.BreakJointsOnDeath = false;
+	sessionHum.UseJumpPower = true;
+	sessionHum.WalkSpeed = math.max(sessionHum.WalkSpeed, 16);
+	sessionHum.JumpPower = math.max(sessionHum.JumpPower, 50);
+	sessionHum.Health = sessionHum.MaxHealth;
+	sessionHum.AutoRotate = true;
+	sessionHum.SetStateEnabled(Enum.HumanoidStateType.Dead, false);
+	sessionRoot.RootPriority = 67;
 
-	ghost = g;
-	runtime.ghost = g;
-	animGhost(g, gHum);
+	sessionModel = g;
+	runtime.sessionModel = g;
+	animateSessionModel(g, sessionHum, char);
 
-	if (cam) cam.CameraSubject = gHum;
-	return $tuple(g, gHum, gRoot);
+	if (cam) cam.CameraSubject = sessionHum;
+	return $tuple(g, sessionHum, sessionRoot);
 }
 
-function bodyPart(char: Model) {
-	const names = ["UpperTorso", "Torso", "LowerTorso", "Head"];
-	for (const name of names) {
-		const part = char.FindFirstChild(name);
-		if (part && part.IsA("BasePart")) return part;
-	}
-
+function targetPart(char: Model) {
 	const [, root] = charParts(char);
+	if (root) return root;
+	if (char.PrimaryPart) return char.PrimaryPart;
+
 	let best: BasePart | undefined;
 	let bestSize = 0;
 	for (const obj of char.GetDescendants()) {
-		if (obj.IsA("BasePart") && obj.Name !== "HumanoidRootPart" && !obj.FindFirstAncestorOfClass("Accessory")) {
+		if (obj.IsA("BasePart") && !obj.FindFirstAncestorOfClass("Accessory")) {
 			const size = obj.Size.X * obj.Size.Y * obj.Size.Z;
 			if (size > bestSize) {
 				best = obj;
@@ -759,13 +880,12 @@ function bodyPart(char: Model) {
 function flingPart(tgt: Tgt) {
 	if (typeIs(tgt, "Instance")) {
 		if (tgt.IsA("Model")) {
-			const root = tgt.FindFirstChild("HumanoidRootPart");
-			if (root && root.IsA("BasePart")) return root;
-			if (tgt.PrimaryPart) return tgt.PrimaryPart;
-			const part = tgt.FindFirstChildWhichIsA("BasePart");
-			return part?.IsA("BasePart") ? part : undefined;
+			return targetPart(tgt);
 		}
-		if (tgt.IsA("BasePart")) return tgt;
+		if (tgt.IsA("BasePart")) {
+			const char = charFromPart(tgt);
+			return char ? targetPart(char) ?? tgt : tgt;
+		}
 	}
 }
 
@@ -776,23 +896,22 @@ function predict(tgt: Tgt): LuaTuple<[CFrame, boolean]> {
 			if (!part.IsDescendantOf(world)) return $tuple(CFrame.identity, true);
 
 			const t = os.clock();
-			const t2 = math.sin(t * 15) + 1;
-			let cf = part.CFrame.mul(CFrame.Angles(1.57, 0, 0)) as CFrame;
+			const lead = method === "weld" ? 0.045 : 0.08 + math.sin(t * 15) * 0.02;
+			let cf = new CFrame(part.Position);
+
+			const oldPos = part.GetAttribute("lastPosition");
+			if (typeIs(oldPos, "Vector3") && part.Position.sub(oldPos).Magnitude > 200) {
+				part.SetAttribute("lastPosition", undefined);
+				return $tuple(cf, true);
+			}
+			part.SetAttribute("lastPosition", part.Position);
+
+			cf = cf.add(part.AssemblyLinearVelocity.mul(lead));
 			if (method !== "weld") {
-				cf = cf.add(part.AssemblyLinearVelocity.mul(t2).add(
-					new Vector3(0, -world.Gravity * 0.5 * t2 * t2 + math.sin(t * 60), 0),
-				));
+				cf = cf.add(new Vector3(0, -world.Gravity * 0.5 * lead * lead + math.sin(t * 60), 0));
 				if (cf.Position.Y < part.Position.Y - 1) {
 					cf = cf.Rotation.add(new Vector3(cf.Position.X, part.Position.Y - 1, cf.Position.Z));
 				}
-			}
-
-			const oldPos = part.GetAttribute("_Uhhhhhh_LastPosition");
-			if (!typeIs(oldPos, "Vector3")) {
-				part.SetAttribute("_Uhhhhhh_LastPosition", part.Position);
-			} else if (part.Position.sub(oldPos).Magnitude > 200) {
-				part.SetAttribute("_Uhhhhhh_LastPosition", undefined);
-				return $tuple(cf, true);
 			}
 
 			return $tuple(cf, false);
@@ -826,10 +945,10 @@ function shouldBackOff(item: QueueItem) {
 
 function getPart(tgt: Tgt) {
 	if (typeIs(tgt, "Instance")) {
-		if (tgt.IsA("Model")) return bodyPart(tgt);
+		if (tgt.IsA("Model")) return targetPart(tgt);
 		if (tgt.IsA("BasePart")) {
 			const char = charFromPart(tgt);
-			return char ? bodyPart(char) ?? tgt : tgt;
+			return char ? targetPart(char) ?? tgt : tgt;
 		}
 	}
 }
@@ -852,10 +971,10 @@ function doHighlight(tgt: Tgt) {
 function fling(tgt: Tgt, dur?: number) {
 	if (!tgt) return false;
 	for (const q of queue) { if (q.tgt === tgt) return false; }
-	if (tgt === ghost || tgt === localPlayer.Character) return false;
+	if (tgt === sessionModel || tgt === localPlayer.Character) return false;
 	if (typeIs(tgt, "Instance")) {
 		if (localPlayer.Character && tgt.IsDescendantOf(localPlayer.Character)) return false;
-		if (ghost && tgt.IsDescendantOf(ghost)) return false;
+		if (sessionModel && tgt.IsDescendantOf(sessionModel)) return false;
 	}
 
 	if (typeIs(tgt, "Instance")) {
@@ -884,7 +1003,7 @@ function rayTarget(pos: Vector3) {
 	rp.FilterType = Enum.RaycastFilterType.Exclude;
 	const ignore = new Array<Instance>();
 	if (localPlayer.Character) ignore.push(localPlayer.Character);
-	if (ghost) ignore.push(ghost);
+	if (sessionModel) ignore.push(sessionModel);
 	rp.FilterDescendantsInstances = ignore;
 	rp.IgnoreWater = true;
 	const ray = cam.ViewportPointToRay(pos.X, pos.Y);
@@ -898,6 +1017,11 @@ function clicked(pos: Vector3, touchFirst: boolean) {
 		if (t) return t;
 	}
 	return mouse.Target && charFromPart(mouse.Target) ? mouse.Target : rayTarget(pos);
+}
+
+function tryFlingTap(pos: Vector3, touchFirst: boolean) {
+	const t = clicked(pos, touchFirst);
+	if (t && fling(t) && !sessionModel) spawnSessionModel();
 }
 
 function ctrlDown() {
@@ -959,8 +1083,7 @@ track(inputService.InputEnded.Connect((inp) => {
 			&& inp.Position.sub(lastTapPos).Magnitude < 10;
 
 		if (click || tap) {
-			const t = clicked(inp.Position, inp.UserInputType === Enum.UserInputType.Touch);
-			if (t && fling(t) && !ghost) spawnGhost();
+			tryFlingTap(inp.Position, inp.UserInputType === Enum.UserInputType.Touch);
 		}
 	}
 
@@ -976,22 +1099,29 @@ track(inputService.InputEnded.Connect((inp) => {
 	if (inp.KeyCode === Enum.KeyCode.Thumbstick1) keys.stick = Vector2.zero;
 }));
 
+track(inputService.TouchTap.Connect((touchPositions, gp) => {
+	if (gp || guiService.MenuIsOpen || inputService.GetFocusedTextBox()) return;
+	const pos = touchPositions[0];
+	if (!pos) return;
+	tryFlingTap(new Vector3(pos.X, pos.Y, 0), true);
+}));
+
 // render
-runService.BindToRenderStep("ClickFling", Enum.RenderPriority.Input.Value + 1, () => {
-	updateHrp();
+runService.BindToRenderStep("nbf9000", Enum.RenderPriority.Input.Value + 1, () => {
+	updateGuide();
 	if (inputService.GetFocusedTextBox()) clearMove();
 	else calcMove();
 });
 
 track(runService.PreAnimation.Connect(() => {
-	const [gHum, gRoot] = charParts(ghost);
-	if (!ghost || !gHum || !gRoot) return;
+	const [sessionHum, sessionRoot] = charParts(sessionModel);
+	if (!sessionModel || !sessionHum || !sessionRoot) return;
 	cam = world.CurrentCamera;
-	if (cam && cam.CameraSubject !== gHum) cam.CameraSubject = gHum;
-	const cf = cam?.CFrame ?? gRoot.CFrame;
+	if (cam && cam.CameraSubject !== sessionHum) cam.CameraSubject = sessionHum;
+	const cf = cam?.CFrame ?? sessionRoot.CFrame;
 	const [, yaw] = cf.ToEulerAnglesYXZ();
-	gHum.Move(CFrame.Angles(0, yaw, 0).VectorToWorldSpace(keys.move));
-	gHum.Jump = keys.wantJump;
+	sessionHum.Move(CFrame.Angles(0, yaw, 0).VectorToWorldSpace(keys.move));
+	sessionHum.Jump = keys.wantJump;
 }));
 
 function nextItem() {
@@ -1035,15 +1165,17 @@ track(runService.PreSimulation.Connect(() => {
 	const char = localPlayer.Character;
 	const [hum, rp] = charParts(char);
 	if (!char || !hum || !rp) return;
-	if (!queue[0] && !ghost) return;
+	if (isDead(hum)) { dropDeadChar(char); return; }
+	if (!queue[0] && !sessionModel) return;
 
-	if (queue[0] && !ghost) spawnGhost();
+	if (queue[0] && !sessionModel) spawnSessionModel();
 
-	const [gHum, gRoot] = charParts(ghost);
-	if (!ghost || !gHum || !gRoot) return;
+	const [sessionHum, sessionRoot] = charParts(sessionModel);
+	if (!sessionModel || !sessionHum || !sessionRoot) return;
 
 	setFlingDestroyH();
-	hideChar(char);
+	saveHumanoidState(hum);
+	maskChar(char);
 	saveHumanoidState(hum);
 	hum.AutoRotate = false;
 	if (hum.WalkSpeed < 1) hum.WalkSpeed = 16;
@@ -1051,11 +1183,11 @@ track(runService.PreSimulation.Connect(() => {
 	hum.ChangeState(Enum.HumanoidStateType.Freefall);
 
 	const item = nextItem();
-	if (!item) { killGhost(true); return; }
-	if (shouldBackOff(item)) { queue.shift(); killGhost(true); return; }
+	if (!item) { clearSessionModel(true); return; }
+	if (shouldBackOff(item)) { queue.shift(); clearSessionModel(true); return; }
 
 	const [cf, done] = predict(item.tgt);
-	if (done) { queue.shift(); killGhost(true); return; }
+	if (done) { queue.shift(); clearSessionModel(true); return; }
 
 	busy = true;
 	noCollideTarget(item.tgt);
@@ -1065,11 +1197,13 @@ track(runService.PreSimulation.Connect(() => {
 runtime.stop = stop;
 runtime.fling = fling;
 runtime.clear = resetRoot;
-runtime.oldDestroyH = originalDestroyHeight;
-runtime.ghost = ghost;
+runtime.oldDestroyHeight = originalDestroyHeight;
+runtime.sessionModel = sessionModel;
 runtime.util = { predict, getPart };
 
-getgenv().ClickFling = runtime;
+getgenv().nbf9000 = runtime;
+bindCharacter(localPlayer.Character);
+track(localPlayer.CharacterAdded.Connect((char) => bindCharacter(char)));
 playIntro();
 
 // congrats you read all of it, have a cookie! 🍪
