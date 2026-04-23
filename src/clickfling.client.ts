@@ -1206,4 +1206,4 @@ bindCharacter(localPlayer.Character);
 track(localPlayer.CharacterAdded.Connect((char) => bindCharacter(char)));
 playIntro();
 
-// congrats you read all of it, have a cookie! 🍪
+// congrats you read all of it
