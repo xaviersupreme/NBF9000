@@ -30,7 +30,18 @@ interface QueueItem {
 	startPos?: Vector3;
 }
 
-let method: Method = "weld";
+interface SavedHumanoidState {
+	hum: Humanoid;
+	autoRotate: boolean;
+	walkSpeed: number;
+	jumpPower: number;
+	jumpHeight: number;
+	useJumpPower: boolean;
+}
+
+const minIntroAssetBytes = 100000;
+
+let method: Method = "weld"; // "weld" or "tp"
 
 
 const anims = {
@@ -68,7 +79,7 @@ if (oldRuntime) {
 	oldStop = oldRuntime.stop;
 	if (oldRuntime.oldDestroyH !== undefined) oldDestroyHeight = oldRuntime.oldDestroyH;
 }
-const originalDestroyHeight = oldDestroyHeight !== oldDestroyHeight ? -500 : oldDestroyHeight;
+const originalDestroyHeight = oldDestroyHeight !== oldDestroyHeight ? -500 : oldDestroyHeight; // this is a really cursed way to check for NaN but it works and it's late
 let destroyHeightSet = false;
 
 if (oldStop) pcall(oldStop);
@@ -99,6 +110,7 @@ let introGui: ScreenGui | undefined;
 let introConn: RBXScriptConnection | undefined;
 let introSound: Sound | undefined;
 let hiddenChar: Model | undefined;
+let savedHumanoidState: SavedHumanoidState | undefined;
 let busy = false;
 let lastInput: InputObject | undefined;
 let lastWasGui = false;
@@ -193,11 +205,11 @@ function makeIntroText(parent: Instance, s: string, size: number, y: number, hig
 	return label;
 }
 
-function customAsset(path: string) {
+function customAsset(path: string) { // this is really bad ngl, but it allows for a lot of flexibility in how the intro sound is provided, and it only checks for the file once so it's not too bad
 	const [hasFile, fileOk] = pcall(() => isfile(path));
 	if (hasFile && fileOk) {
 		const [readOk, data] = pcall(() => readfile(path));
-		if (readOk && typeIs(data, "string") && data.size() < 100000) return;
+		if (readOk && typeIs(data, "string") && data.size() < minIntroAssetBytes) return;
 		const [ok, id] = pcall(() => getcustomasset(path));
 		if (ok && typeIs(id, "string") && id.size() > 0) return id;
 		const [synOk, synId] = pcall(() => getsynasset(path));
@@ -216,7 +228,7 @@ function introAsset() {
 		pcall(() => makefolder("assets"));
 		const httpGet = (game as unknown as { [key: string]: (self: DataModel, url: string) => string })["HttpGet"];
 		const data = httpGet(game, "https://raw.githubusercontent.com/xaviersupreme/nanny-bean-flicker-9000/main/assets/foreign.mp3");
-		if (data.size() > 100000) writefile(path, data);
+		if (data.size() > minIntroAssetBytes) writefile(path, data);
 	});
 
 	const asset = customAsset(path);
@@ -495,6 +507,29 @@ function resetRoot() {
 	}
 }
 
+function saveHumanoidState(hum: Humanoid) {
+	if (savedHumanoidState?.hum === hum) return;
+	savedHumanoidState = {
+		hum,
+		autoRotate: hum.AutoRotate,
+		walkSpeed: hum.WalkSpeed,
+		jumpPower: hum.JumpPower,
+		jumpHeight: hum.JumpHeight,
+		useJumpPower: hum.UseJumpPower,
+	};
+}
+
+function restoreHumanoidState() {
+	const state = savedHumanoidState;
+	savedHumanoidState = undefined;
+	if (!state || !state.hum.Parent) return;
+	state.hum.AutoRotate = state.autoRotate;
+	state.hum.WalkSpeed = state.walkSpeed;
+	state.hum.UseJumpPower = state.useJumpPower;
+	state.hum.JumpPower = state.jumpPower;
+	state.hum.JumpHeight = state.jumpHeight;
+}
+
 function restoreAlpha() {
 	for (const [p, a] of savedTransparency) {
 		if (p.Parent) p.LocalTransparencyModifier = a;
@@ -557,6 +592,7 @@ function killGhost(sync: boolean) {
 	restoreTargetCollision();
 	restoreAlpha();
 	resetRoot();
+	restoreHumanoidState();
 	if (retCf && rp) {
 		rp.CFrame = retCf;
 		rp.AssemblyLinearVelocity = retVel;
@@ -671,7 +707,7 @@ function spawnGhost() {
 	char.Archivable = arc;
 	if (!g) return;
 
-	g.Name = "the real israeli femboy jewmaxxer";
+	g.Name = "the real israeli femboy jewmaxxer"; // gotta flex on em
 	cleanGhost(g);
 	g.Parent = world;
 	g.PivotTo(rp.CFrame);
@@ -865,7 +901,12 @@ function clicked(pos: Vector3, touchFirst: boolean) {
 }
 
 function ctrlDown() {
-	return inputService.IsKeyDown(Enum.KeyCode.LeftControl) || inputService.IsKeyDown(Enum.KeyCode.RightControl);
+	return inputService.IsKeyDown(Enum.KeyCode.LeftControl)
+		|| inputService.IsKeyDown(Enum.KeyCode.RightControl)
+		|| inputService.IsKeyDown(Enum.KeyCode.LeftMeta)
+		|| inputService.IsKeyDown(Enum.KeyCode.RightMeta)
+		|| inputService.IsKeyDown(Enum.KeyCode.LeftSuper)
+		|| inputService.IsKeyDown(Enum.KeyCode.RightSuper);
 }
 
 function calcMove() {
@@ -911,7 +952,7 @@ track(inputService.InputChanged.Connect((inp) => {
 
 track(inputService.InputEnded.Connect((inp) => {
 	if (lastInput && lastInput === inp && !guiService.MenuIsOpen && !inputService.GetFocusedTextBox()) {
-		const click = inp.UserInputType === Enum.UserInputType.MouseButton1 && ctrlDown();
+		const click = inp.UserInputType === Enum.UserInputType.MouseButton1 && !lastWasGui && ctrlDown();
 		const tap = inp.UserInputType === Enum.UserInputType.Touch
 			&& !lastWasGui
 			&& os.clock() - lastTapTime < 0.3
@@ -969,11 +1010,11 @@ function nextItem() {
 function doFling(rp: BasePart, hum: Humanoid, tgt: Tgt, cf: CFrame) {
 	const tp = getPart(tgt);
 	const rep = flingPart(tgt) ?? tp;
-	if (method === "weld" && !tp) return;
+	const useWeld = method === "weld" && tp !== undefined;
 
 	if (!rp.IsGrounded()) {
-		if (method === "weld") {
-			sethiddenproperty(rp, "PhysicsRepRootPart", rep);
+		if (useWeld) {
+			pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));
 			rp.CFrame = cf.add(new Vector3(0, 0, math.random(0, 1) * 0.005)) as CFrame;
 		} else {
 			rp.CFrame = new CFrame(cf.Position.add(new Vector3(0, 0, math.random(0, 1) * 0.005))).mul(CFrame.Angles(0, os.clock() * 15, 0)) as CFrame;
@@ -1003,6 +1044,7 @@ track(runService.PreSimulation.Connect(() => {
 
 	setFlingDestroyH();
 	hideChar(char);
+	saveHumanoidState(hum);
 	hum.AutoRotate = false;
 	if (hum.WalkSpeed < 1) hum.WalkSpeed = 16;
 	if (hum.JumpPower < 1) hum.JumpPower = 50;
@@ -1029,3 +1071,5 @@ runtime.util = { predict, getPart };
 
 getgenv().ClickFling = runtime;
 playIntro();
+
+// congrats you read all of it, have a cookie! 🍪
