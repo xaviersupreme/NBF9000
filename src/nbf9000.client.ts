@@ -1,4 +1,5 @@
 declare function getgenv(): { nbf9000?: Runtime; config?: Config };
+declare function gethui(): Instance;
 declare function sethiddenproperty(obj: Instance, prop: string, val: unknown): void;
 declare function getcustomasset(path: string): string;
 declare function isfile(path: string): boolean;
@@ -24,6 +25,7 @@ interface Runtime {
 interface Config {
 	intro?: boolean;
 	method?: Method;
+	showHRPs?: boolean;
 }
 
 interface QueueItem {
@@ -45,10 +47,19 @@ interface SavedHumanoidState {
 	breakJointsOnDeath: boolean;
 }
 
+interface IntroLoaderState {
+	step: number;
+	total: number;
+	done: boolean;
+	failed: boolean;
+	cached: boolean;
+}
+
 const env = getgenv();
 const config = env.config ?? (env.config = {
 	intro: true,
 	method: "weld" as Method,
+	showHRPs: false,
 });
 
 let method: Method = config.method === "tp" ? "tp" : "weld";
@@ -85,6 +96,8 @@ const localPlayer = players.LocalPlayer;
 const mouse = localPlayer.GetMouse();
 let cam = world.CurrentCamera;
 const signatureUserId = 10512489482;
+const releaseScriptUrl = "https://github.com/xaviersupreme/nbf9000/releases/latest/download/nbf9000.client.luau";
+const cachedScriptPath = "assets/script.lua";
 
 const oldRuntime = env.nbf9000;
 let oldStop: (() => void) | undefined;
@@ -119,11 +132,15 @@ const targetCollision = new Map<BasePart, boolean>();
 let sessionModel: Model | undefined;
 let guidePart: BasePart | undefined;
 let guideOutline: SelectionBox | undefined;
+let guideOutlineAlt: SelectionBox | undefined;
 let guideTick = os.clock();
 let introGui: ScreenGui | undefined;
 let introConn: RBXScriptConnection | undefined;
 let introSound: Sound | undefined;
 let watermarkGui: ScreenGui | undefined;
+let watermarkConn: RBXScriptConnection | undefined;
+let watermarkLabel: TextLabel | undefined;
+let watermarkStroke: UIStroke | undefined;
 let savedHumanoidState: SavedHumanoidState | undefined;
 let maskedChar: Model | undefined;
 let deathConn: RBXScriptConnection | undefined;
@@ -132,6 +149,9 @@ let lastInput: InputObject | undefined;
 let lastWasGui = false;
 let lastTapTime = 0;
 let lastTapPos = Vector3.zero;
+const hrpOutlines = new Map<Player, SelectionBox>();
+const loaderFrames = ["|", "/", "-", "\\"];
+const guideSpinOffset = new Vector3(math.random(), math.random(), math.random()).mul(math.pi * 2);
 
 const keys = {
 	w: false, a: false, s: false, d: false,
@@ -169,6 +189,17 @@ function accentSequence() {
 	]);
 }
 
+function accentLoopSequence() {
+	return new ColorSequence([
+		new ColorSequenceKeypoint(0, Color3.fromRGB(122, 162, 247)),
+		new ColorSequenceKeypoint(0.18, Color3.fromRGB(125, 207, 255)),
+		new ColorSequenceKeypoint(0.36, Color3.fromRGB(187, 154, 247)),
+		new ColorSequenceKeypoint(0.54, Color3.fromRGB(247, 118, 142)),
+		new ColorSequenceKeypoint(0.72, Color3.fromRGB(224, 175, 104)),
+		new ColorSequenceKeypoint(1, Color3.fromRGB(122, 162, 247)),
+	]);
+}
+
 function accentGradient(parent: GuiObject, rot = 0) {
 	const g = new Instance("UIGradient");
 	g.Color = accentSequence();
@@ -190,8 +221,10 @@ function isDead(hum?: Humanoid) {
 
 function clearGuide() {
 	if (guideOutline) guideOutline.Destroy();
+	if (guideOutlineAlt) guideOutlineAlt.Destroy();
 	if (guidePart) guidePart.Destroy();
 	guideOutline = undefined;
+	guideOutlineAlt = undefined;
 	guidePart = undefined;
 }
 
@@ -224,6 +257,22 @@ function killIntro() {
 	introConn = undefined;
 	introSound = undefined;
 	introGui = undefined;
+	if (watermarkLabel?.Parent) {
+		tweenService.Create(watermarkLabel, new TweenInfo(0.18), {
+			TextTransparency: 0.08,
+			TextStrokeTransparency: 0.38,
+		}).Play();
+	}
+	if (watermarkStroke?.Parent) {
+		tweenService.Create(watermarkStroke, new TweenInfo(0.18), { Transparency: 0.24 }).Play();
+	}
+}
+
+function clearHrpOutlines() {
+	for (const [, box] of hrpOutlines) {
+		if (box.Parent) box.Destroy();
+	}
+	hrpOutlines.clear();
 }
 
 function getSignaturePlayer() {
@@ -233,8 +282,12 @@ function getSignaturePlayer() {
 }
 
 function clearWatermark() {
+	if (watermarkConn) watermarkConn.Disconnect();
 	if (watermarkGui) watermarkGui.Destroy();
+	watermarkConn = undefined;
 	watermarkGui = undefined;
+	watermarkLabel = undefined;
+	watermarkStroke = undefined;
 }
 
 function updateWatermark() {
@@ -245,14 +298,13 @@ function updateWatermark() {
 	}
 	if (watermarkGui?.Parent) return;
 
-	const pg = localPlayer.WaitForChild("PlayerGui") as PlayerGui;
 	const screenGui = new Instance("ScreenGui");
 	screenGui.Name = "nbf9000Mark";
 	screenGui.IgnoreGuiInset = true;
 	screenGui.ResetOnSpawn = false;
 	screenGui.DisplayOrder = 2147483646;
 	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling;
-	screenGui.Parent = pg;
+	screenGui.Parent = gethui();
 	watermarkGui = screenGui;
 
 	const label = new Instance("TextLabel");
@@ -266,15 +318,72 @@ function updateWatermark() {
 	label.TextSize = 14;
 	label.TextXAlignment = Enum.TextXAlignment.Right;
 	label.TextColor3 = Color3.fromRGB(230, 230, 236);
-	label.TextTransparency = 0.28;
-	label.TextStrokeTransparency = 0.65;
+	const introActive = config.intro !== false && introGui !== undefined;
+	label.TextTransparency = introActive ? 1 : 0.08;
+	label.TextStrokeTransparency = introActive ? 1 : 0.38;
 	label.ZIndex = 50;
 	label.Parent = screenGui;
+	watermarkLabel = label;
 
 	const grad = new Instance("UIGradient");
-	grad.Color = accentSequence();
+	grad.Color = accentLoopSequence();
 	grad.Rotation = 0;
 	grad.Parent = label;
+
+	const stroke = new Instance("UIStroke");
+	stroke.Thickness = 1;
+	stroke.Transparency = introActive ? 1 : 0.24;
+	stroke.Parent = label;
+	watermarkStroke = stroke;
+
+	watermarkConn = runService.RenderStepped.Connect(() => {
+		if (!label.Parent) {
+			if (watermarkConn) watermarkConn.Disconnect();
+			watermarkConn = undefined;
+			return;
+		}
+		const t = os.clock();
+		grad.Offset = new Vector2(wrap(t * 0.22) * 2 - 1, 0);
+	});
+
+}
+
+function updateHrpOutlines() {
+	if (config.showHRPs !== true) {
+		clearHrpOutlines();
+		return;
+	}
+	const live = new Set<Player>();
+	for (const player of players.GetPlayers()) {
+		if (player === localPlayer) continue;
+		live.add(player);
+		const [, root] = charParts(player.Character);
+		let box = hrpOutlines.get(player);
+		if (!root || !root.Parent) {
+			if (box) {
+				box.Destroy();
+				hrpOutlines.delete(player);
+			}
+			continue;
+		}
+		if (!box || box.Adornee !== root || !box.Parent) {
+			if (box) box.Destroy();
+			box = new Instance("SelectionBox");
+			box.Name = "HRP Mark";
+			box.Adornee = root;
+			box.LineThickness = 0.02;
+			box.SurfaceTransparency = 1;
+			box.Parent = root;
+			hrpOutlines.set(player, box);
+		}
+		box.Color3 = accentColor(os.clock() * 0.55 + 0.26);
+	}
+	for (const [player, box] of hrpOutlines) {
+		if (!live.has(player)) {
+			box.Destroy();
+			hrpOutlines.delete(player);
+		}
+	}
 }
 
 function makeIntroText(parent: Instance, s: string, size: number, y: number, high = false) {
@@ -324,17 +433,69 @@ function introAsset() {
 	return asset;
 }
 
+function cacheScript(state?: IntroLoaderState) {
+	const setStep = (step: number) => {
+		if (state) state.step = step;
+	};
+	if (state) {
+		state.total = 3;
+		state.step = 0;
+		state.done = false;
+		state.failed = false;
+		state.cached = false;
+	}
+
+	const [hasFile, fileOk] = pcall(() => isfile(cachedScriptPath));
+	if (hasFile && fileOk) {
+		const [readOk, data] = pcall(() => readfile(cachedScriptPath));
+		if (readOk && typeIs(data, "string") && data.size() > 1000) {
+			if (state) {
+				state.step = state.total;
+				state.done = true;
+				state.cached = true;
+			}
+			return;
+		}
+	}
+
+	try {
+		setStep(1);
+		pcall(() => makefolder("assets"));
+		const httpGet = (game as unknown as { [key: string]: (self: DataModel, url: string) => string })["HttpGet"];
+		const data = httpGet(game, releaseScriptUrl);
+		setStep(2);
+		if (data.size() > 1000) {
+			writefile(cachedScriptPath, data);
+		}
+		setStep(3);
+		if (state) state.done = true;
+	} catch (err) {
+		if (state) {
+			state.failed = true;
+			state.done = true;
+		}
+		warn(`nbf9000 script cache failed: ${err}`);
+	}
+}
+
 function playIntro() {
 	killIntro();
+	const loader = {
+		step: 0,
+		total: 3,
+		done: false,
+		failed: false,
+		cached: false,
+	} as IntroLoaderState;
+	task.spawn(() => cacheScript(loader));
 
-	const pg = localPlayer.WaitForChild("PlayerGui") as PlayerGui;
 	const screenGui = new Instance("ScreenGui");
 	screenGui.Name = "nbf9000Intro";
 	screenGui.IgnoreGuiInset = true;
 	screenGui.ResetOnSpawn = false;
 	screenGui.DisplayOrder = 2147483647;
 	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling;
-	screenGui.Parent = pg;
+	screenGui.Parent = gethui();
 	introGui = screenGui;
 
 	const asset = introAsset();
@@ -363,7 +524,7 @@ function playIntro() {
 	const shade = new Instance("Frame");
 	shade.Size = UDim2.fromScale(1, 1);
 	shade.BackgroundColor3 = Color3.fromRGB(4, 6, 14);
-	shade.BackgroundTransparency = 0.18;
+	shade.BackgroundTransparency = 1;
 	shade.BorderSizePixel = 0;
 	shade.ZIndex = 1;
 	shade.Parent = screenGui;
@@ -381,7 +542,7 @@ function playIntro() {
 		frame.Position = spec.pos;
 		frame.Size = spec.size;
 		frame.BackgroundColor3 = new Color3(1, 1, 1);
-		frame.BackgroundTransparency = 0.18;
+		frame.BackgroundTransparency = 1;
 		frame.BorderSizePixel = 0;
 		frame.ZIndex = 2;
 		frame.Parent = screenGui;
@@ -399,11 +560,15 @@ function playIntro() {
 	card.Position = UDim2.fromScale(0.5, 0.5);
 	card.Size = new UDim2(0.82, 0, 0, 136);
 	card.BackgroundColor3 = Color3.fromRGB(22, 22, 33);
-	card.BackgroundTransparency = 0.04;
+	card.BackgroundTransparency = 1;
 	card.BorderSizePixel = 0;
 	card.ClipsDescendants = true;
 	card.ZIndex = 3;
 	card.Parent = screenGui;
+
+	const corner = new Instance("UICorner");
+	corner.CornerRadius = new UDim(0, 7);
+	corner.Parent = card;
 
 	const cardSize = new Instance("UISizeConstraint");
 	cardSize.MinSize = new Vector2(260, 136);
@@ -417,6 +582,7 @@ function playIntro() {
 	const stroke = new Instance("UIStroke");
 	stroke.Thickness = 1;
 	stroke.Color = new Color3(1, 1, 1);
+	stroke.Transparency = 1;
 	stroke.Parent = card;
 
 	const edge = new Instance("UIGradient");
@@ -427,15 +593,33 @@ function playIntro() {
 	top.Position = new UDim2(0, 0, 0, 0);
 	top.Size = new UDim2(1, 0, 0, 18);
 	top.BackgroundColor3 = Color3.fromRGB(15, 15, 24);
+	top.BackgroundTransparency = 1;
 	top.BorderSizePixel = 0;
 	top.ZIndex = 4;
 	top.Parent = card;
 
+	const topCorner = new Instance("UICorner");
+	topCorner.CornerRadius = new UDim(0, 7);
+	topCorner.Parent = top;
+
+	const topFill = new Instance("Frame");
+	topFill.Position = new UDim2(0, 0, 0, 7);
+	topFill.Size = new UDim2(1, 0, 1, -7);
+	topFill.BackgroundColor3 = top.BackgroundColor3;
+	topFill.BackgroundTransparency = 1;
+	topFill.BorderSizePixel = 0;
+	topFill.ZIndex = 4;
+	topFill.Parent = top;
+
 	const title = makeIntroText(card, "NBF9000", 28, 45, true);
 	const sub = makeIntroText(card, ":3 :3 :3 :3 :3 :3 :3", 13, 78);
-	sub.TextTransparency = 0.12;
+	title.TextTransparency = 1;
+	title.TextStrokeTransparency = 1;
+	sub.TextTransparency = 1;
+	sub.TextStrokeTransparency = 1;
 	const boot = makeIntroText(card, "ctrl+mb1 / tap player", 12, 100);
-	boot.TextTransparency = 0.38;
+	boot.TextTransparency = 1;
+	boot.TextStrokeTransparency = 1;
 	const titleGrad = accentGradient(title);
 	const subGrad = accentGradient(sub);
 
@@ -486,11 +670,22 @@ function playIntro() {
 	flash.Parent = screenGui;
 
 	tweenService.Create(scale, new TweenInfo(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.Out), { Scale: 1 }).Play();
+	tweenService.Create(shade, new TweenInfo(0.12), { BackgroundTransparency: 0.18 }).Play();
+	tweenService.Create(card, new TweenInfo(0.12), { BackgroundTransparency: 0.04 }).Play();
+	tweenService.Create(top, new TweenInfo(0.12), { BackgroundTransparency: 0 }).Play();
+	tweenService.Create(topFill, new TweenInfo(0.12), { BackgroundTransparency: 0 }).Play();
+	tweenService.Create(stroke, new TweenInfo(0.12), { Transparency: 0 }).Play();
+	for (const frame of borderFrames) tweenService.Create(frame, new TweenInfo(0.12), { BackgroundTransparency: 0.18 }).Play();
+	tweenService.Create(title, new TweenInfo(0.12), { TextTransparency: 0, TextStrokeTransparency: 0.25 }).Play();
+	tweenService.Create(sub, new TweenInfo(0.12), { TextTransparency: 0.12, TextStrokeTransparency: 0.55 }).Play();
+	tweenService.Create(boot, new TweenInfo(0.12), { TextTransparency: 0.26, TextStrokeTransparency: 0.55 }).Play();
 
 	const start = os.clock();
 	let lastBar = 0;
 	let lastUi = 0;
 	let lastLoud = 0;
+	let lastLoader = 0;
+	let loaderFrame = 0;
 	let loud = 0.35;
 	let closing = false;
 	introConn = runService.RenderStepped.Connect(() => {
@@ -520,7 +715,15 @@ function playIntro() {
 		const textOffset = new Vector2(math.sin(t * 4) * 0.28, 0);
 		titleGrad.Offset = textOffset;
 		subGrad.Offset = textOffset;
-		boot.TextColor3 = Color3.fromRGB(170, 170, 176);
+		boot.TextColor3 = loader.failed ? Color3.fromRGB(255, 164, 164) : Color3.fromRGB(170, 170, 176);
+		if (t - lastLoader > 0.09) {
+			lastLoader = t;
+			loaderFrame = (loaderFrame + 1) % loaderFrames.size();
+			const glyph = loaderFrames[loaderFrame];
+			boot.Text = loader.done
+				? "ctrl+mb1 / tap player"
+				: `Downloading ${loader.step}/${loader.total} ${glyph}`;
+		}
 		if (t - lastBar > 0.055) {
 			lastBar = t;
 			for (let i = 0; i < bars.size(); i++) {
@@ -543,6 +746,7 @@ function playIntro() {
 			for (const frame of borderFrames) frame.BackgroundTransparency = 1;
 			card.BackgroundTransparency = 1;
 			top.BackgroundTransparency = 1;
+			topFill.BackgroundTransparency = 1;
 			tweenService.Create(flash, new TweenInfo(0.22), { BackgroundTransparency: 1 }).Play();
 			tweenService.Create(stroke, new TweenInfo(0.22), { Transparency: 1 }).Play();
 			for (const label of [title, sub, boot]) {
@@ -585,7 +789,11 @@ function updateGuide() {
 	if (!root) { clearGuide(); return; }
 
 	const t = os.clock();
-	const spin = CFrame.Angles(t * 90, t * 130, t * 70);
+	const spin = CFrame.Angles(
+		math.sin(t * 2.7 + guideSpinOffset.X) * 2.6 + t * 108,
+		math.cos(t * 3.4 + guideSpinOffset.Y) * 3.4 + t * 156,
+		math.sin(t * 4.3 + guideSpinOffset.Z) * 2.2 + t * 92,
+	);
 	const wanted = root.CFrame.mul(spin) as CFrame;
 
 	if (!guidePart) {
@@ -607,9 +815,17 @@ function updateGuide() {
 		box.SurfaceTransparency = 1;
 		box.Parent = p;
 
+		const boxAlt = new Instance("SelectionBox");
+		boxAlt.Name = "HRP Outline Alt";
+		boxAlt.Adornee = p;
+		boxAlt.LineThickness = 0.015;
+		boxAlt.SurfaceTransparency = 1;
+		boxAlt.Parent = p;
+
 		p.Parent = world;
 		guidePart = p;
 		guideOutline = box;
+		guideOutlineAlt = boxAlt;
 		guideTick = t;
 	}
 
@@ -628,6 +844,7 @@ function updateGuide() {
 	}
 
 	if (guideOutline) guideOutline.Color3 = accentColor(os.clock() * 0.55);
+	if (guideOutlineAlt) guideOutlineAlt.Color3 = accentColor(os.clock() * 0.55 + 0.26);
 }
 
 function resetRoot() {
@@ -769,6 +986,7 @@ function stop() {
 	runService.UnbindFromRenderStep("nbf9000");
 	clearSessionModel(false);
 	clearGuide();
+	clearHrpOutlines();
 	killIntro();
 	clearWatermark();
 }
@@ -904,7 +1122,8 @@ function animateSessionModel(char: Model, hum: Humanoid) {
 
 		const st = hum.GetState();
 		const speed = moveSpeed();
-		const moving = speed > 1.5;
+		const inputMoving = keys.move.Magnitude > 0.05;
+		const moving = inputMoving || speed > (busy ? 3.4 : 4.2);
 		if (st === Enum.HumanoidStateType.Jumping || hum.Jump) {
 			jumpTime = 0.3;
 			play("jump", 0.1);
@@ -914,7 +1133,7 @@ function animateSessionModel(char: Model, hum: Humanoid) {
 				return;
 			}
 			play("fall", 0.2);
-		} else if (moving || busy) {
+		} else if (moving) {
 			playMove(speed);
 		} else {
 			play("idle", 0.2);
@@ -1071,11 +1290,22 @@ function doHighlight(tgt: Tgt) {
 	if (!char) return;
 	const hl = new Instance("Highlight");
 	hl.Adornee = char;
-	hl.FillColor = new Color3(1, 0, 0);
-	hl.OutlineColor = new Color3(1, 0, 0);
-	hl.FillTransparency = 0.5;
+	hl.FillColor = accentColor(0);
+	hl.OutlineColor = accentColor(0.3);
+	hl.FillTransparency = 0.72;
 	hl.OutlineTransparency = 0;
 	hl.Parent = tgt;
+	const born = os.clock();
+	const conn = runService.RenderStepped.Connect(() => {
+		if (!hl.Parent) {
+			conn.Disconnect();
+			return;
+		}
+		const t = os.clock() - born;
+		hl.FillColor = accentColor(t * 0.55);
+		hl.OutlineColor = accentColor(t * 0.55 + 0.22);
+	});
+	hl.Destroying.Once(() => conn.Disconnect());
 	tweenService.Create(hl, new TweenInfo(5), { FillTransparency: 1, OutlineTransparency: 1 }).Play();
 	debrisService.AddItem(hl, 5);
 }
@@ -1097,6 +1327,8 @@ function fling(tgt: Tgt, dur?: number) {
 
 	queue.push({ tgt, dur });
 	busy = true;
+	if (!sessionModel) spawnSessionModel();
+	maskChar(localPlayer.Character);
 	doHighlight(tgt);
 	return true;
 }
@@ -1133,7 +1365,7 @@ function clicked(pos: Vector3, touchFirst: boolean) {
 
 function tryFlingTap(pos: Vector3, touchFirst: boolean) {
 	const t = clicked(pos, touchFirst);
-	if (t && fling(t) && !sessionModel) spawnSessionModel();
+	if (t) fling(t);
 }
 
 function ctrlDown() {
@@ -1221,6 +1453,7 @@ track(inputService.TouchTap.Connect((touchPositions, gp) => {
 // render
 runService.BindToRenderStep("nbf9000", Enum.RenderPriority.Input.Value + 1, () => {
 	updateGuide();
+	updateHrpOutlines();
 	if (inputService.GetFocusedTextBox()) clearMove();
 	else calcMove();
 });
@@ -1319,7 +1552,7 @@ bindCharacter(localPlayer.Character);
 track(localPlayer.CharacterAdded.Connect((char) => bindCharacter(char)));
 track(players.PlayerAdded.Connect(() => updateWatermark()));
 track(players.PlayerRemoving.Connect(() => task.defer(updateWatermark)));
-updateWatermark();
 if (config.intro !== false) playIntro();
+updateWatermark();
 
 // congrats you read all of it
