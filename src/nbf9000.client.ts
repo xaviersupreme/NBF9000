@@ -41,6 +41,8 @@ interface SavedHumanoidState {
 	jumpPower: number;
 	jumpHeight: number;
 	useJumpPower: boolean;
+	requiresNeck: boolean;
+	breakJointsOnDeath: boolean;
 }
 
 const env = getgenv();
@@ -55,8 +57,9 @@ let method: Method = config.method === "tp" ? "tp" : "weld";
 const anims = {
 	R6: {
 		idle: "rbxassetid://180435571",
+		idleAlt: "rbxassetid://180435792",
 		walk: "rbxassetid://180426354",
-		run: "rbxassetid://180426354",
+		run: undefined as string | undefined,
 		jump: "rbxassetid://125750702",
 		fall: "rbxassetid://180436148",
 	},
@@ -81,6 +84,7 @@ const soundService = game.GetService("SoundService");
 const localPlayer = players.LocalPlayer;
 const mouse = localPlayer.GetMouse();
 let cam = world.CurrentCamera;
+const signatureUserId = 10512489482;
 
 const oldRuntime = env.nbf9000;
 let oldStop: (() => void) | undefined;
@@ -89,7 +93,7 @@ if (oldRuntime) {
 	oldStop = oldRuntime.stop;
 	if (oldRuntime.oldDestroyHeight !== undefined) oldDestroyHeight = oldRuntime.oldDestroyHeight;
 }
-const originalDestroyHeight = oldDestroyHeight !== oldDestroyHeight ? -500 : oldDestroyHeight; // this is a really cursed way to check for NaN but it works and it's late
+const originalDestroyHeight = oldDestroyHeight !== oldDestroyHeight ? -500 : oldDestroyHeight;
 let destroyHeightSet = false;
 
 if (oldStop) pcall(oldStop);
@@ -119,6 +123,7 @@ let guideTick = os.clock();
 let introGui: ScreenGui | undefined;
 let introConn: RBXScriptConnection | undefined;
 let introSound: Sound | undefined;
+let watermarkGui: ScreenGui | undefined;
 let savedHumanoidState: SavedHumanoidState | undefined;
 let maskedChar: Model | undefined;
 let deathConn: RBXScriptConnection | undefined;
@@ -219,6 +224,57 @@ function killIntro() {
 	introConn = undefined;
 	introSound = undefined;
 	introGui = undefined;
+}
+
+function getSignaturePlayer() {
+	for (const player of players.GetPlayers()) {
+		if (player.UserId === signatureUserId) return player;
+	}
+}
+
+function clearWatermark() {
+	if (watermarkGui) watermarkGui.Destroy();
+	watermarkGui = undefined;
+}
+
+function updateWatermark() {
+	const signaturePlayer = getSignaturePlayer();
+	if (!signaturePlayer) {
+		clearWatermark();
+		return;
+	}
+	if (watermarkGui?.Parent) return;
+
+	const pg = localPlayer.WaitForChild("PlayerGui") as PlayerGui;
+	const screenGui = new Instance("ScreenGui");
+	screenGui.Name = "nbf9000Mark";
+	screenGui.IgnoreGuiInset = true;
+	screenGui.ResetOnSpawn = false;
+	screenGui.DisplayOrder = 2147483646;
+	screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling;
+	screenGui.Parent = pg;
+	watermarkGui = screenGui;
+
+	const label = new Instance("TextLabel");
+	label.AnchorPoint = new Vector2(1, 1);
+	label.Position = new UDim2(1, -12, 1, -10);
+	label.Size = new UDim2(0, 340, 0, 22);
+	label.BackgroundTransparency = 1;
+	label.BorderSizePixel = 0;
+	label.Font = Enum.Font.Code;
+	label.Text = `NBF9000 // im in your game (${signaturePlayer.Name}/${signaturePlayer.DisplayName}) :)`;
+	label.TextSize = 14;
+	label.TextXAlignment = Enum.TextXAlignment.Right;
+	label.TextColor3 = Color3.fromRGB(230, 230, 236);
+	label.TextTransparency = 0.28;
+	label.TextStrokeTransparency = 0.65;
+	label.ZIndex = 50;
+	label.Parent = screenGui;
+
+	const grad = new Instance("UIGradient");
+	grad.Color = accentSequence();
+	grad.Rotation = 0;
+	grad.Parent = label;
 }
 
 function makeIntroText(parent: Instance, s: string, size: number, y: number, high = false) {
@@ -433,10 +489,21 @@ function playIntro() {
 
 	const start = os.clock();
 	let lastBar = 0;
+	let lastUi = 0;
+	let lastLoud = 0;
+	let loud = 0.35;
 	let closing = false;
 	introConn = runService.RenderStepped.Connect(() => {
 		const t = os.clock() - start;
-		const loud = introSound ? math.clamp(introSound.PlaybackLoudness / 650, 0, 1) : 0.35;
+		if (t - lastLoud > 0.08) {
+			lastLoud = t;
+			loud = introSound ? math.clamp(introSound.PlaybackLoudness / 650, 0, 1) : 0.35;
+		}
+		if (t - lastUi < 1 / 30) {
+			if (t <= 2.75 || closing) return;
+		} else {
+			lastUi = t;
+		}
 		const borderThick = math.floor(2 + loud * 2);
 		borderFrames[0].Size = new UDim2(1, 0, 0, borderThick);
 		borderFrames[1].Position = new UDim2(0, 0, 1, -borderThick);
@@ -587,6 +654,8 @@ function saveHumanoidState(hum: Humanoid) {
 		jumpPower: hum.JumpPower,
 		jumpHeight: hum.JumpHeight,
 		useJumpPower: hum.UseJumpPower,
+		requiresNeck: hum.RequiresNeck,
+		breakJointsOnDeath: hum.BreakJointsOnDeath,
 	};
 }
 
@@ -599,6 +668,8 @@ function restoreHumanoidState() {
 	state.hum.UseJumpPower = state.useJumpPower;
 	state.hum.JumpPower = state.jumpPower;
 	state.hum.JumpHeight = state.jumpHeight;
+	state.hum.RequiresNeck = state.requiresNeck;
+	state.hum.BreakJointsOnDeath = state.breakJointsOnDeath;
 }
 
 function restoreAlpha() {
@@ -699,6 +770,7 @@ function stop() {
 	clearSessionModel(false);
 	clearGuide();
 	killIntro();
+	clearWatermark();
 }
 
 function bindCharacter(char?: Model) {
@@ -734,7 +806,8 @@ function prepareSessionModel(char: Model) {
 	}
 }
 
-function createTrack(anim: Animator, id: string, pri: Enum.AnimationPriority, loop: boolean) {
+function createTrack(anim: Animator, id: string | undefined, pri: Enum.AnimationPriority, loop: boolean) {
+	if (!id || id.size() === 0) return;
 	const a = new Instance("Animation");
 	a.AnimationId = id;
 	const [ok, t] = pcall(() => anim.LoadAnimation(a));
@@ -746,80 +819,113 @@ function createTrack(anim: Animator, id: string, pri: Enum.AnimationPriority, lo
 	}
 }
 
-function animNodeId(node: Instance | undefined, fallback: string) {
-	if (node?.IsA("Animation")) {
-		return node.AnimationId.size() > 0 ? node.AnimationId : fallback;
-	}
-	if (node) {
-		for (const child of node.GetChildren()) {
-			if (child.IsA("Animation") && child.AnimationId.size() > 0) return child.AnimationId;
-		}
-	}
-	return fallback;
-}
-
-function resolveAnimSet(char: Model | undefined, rig: Enum.HumanoidRigType) {
-	const fallback = rig === Enum.HumanoidRigType.R15 ? anims.R15 : anims.R6;
-	const animate = char?.FindFirstChild("Animate");
-	if (!animate) return fallback;
-	return {
-		idle: animNodeId(animate.FindFirstChild("idle"), fallback.idle),
-		walk: animNodeId(animate.FindFirstChild("walk"), fallback.walk),
-		run: animNodeId(animate.FindFirstChild("run"), fallback.run),
-		jump: animNodeId(animate.FindFirstChild("jump"), fallback.jump),
-		fall: animNodeId(animate.FindFirstChild("fall"), fallback.fall),
-	};
-}
-
-function animateSessionModel(char: Model, hum: Humanoid, sourceChar?: Model) {
+function animateSessionModel(char: Model, hum: Humanoid) {
 	const anim = new Instance("Animator");
 	anim.Parent = hum;
 
-	const set = resolveAnimSet(sourceChar, hum.RigType);
-	const tracks = {
-		idle: createTrack(anim, set.idle, Enum.AnimationPriority.Idle, true),
-		walk: createTrack(anim, set.walk, Enum.AnimationPriority.Movement, true),
-		run: createTrack(anim, set.run, Enum.AnimationPriority.Movement, true),
-		jump: createTrack(anim, set.jump, Enum.AnimationPriority.Action, false),
-		fall: createTrack(anim, set.fall, Enum.AnimationPriority.Action, true),
-	};
+	const isR15 = hum.RigType === Enum.HumanoidRigType.R15;
+	const set = isR15 ? anims.R15 : anims.R6;
+	const idlePriority = isR15 ? Enum.AnimationPriority.Idle : Enum.AnimationPriority.Core;
+	const movePriority = isR15 ? Enum.AnimationPriority.Movement : Enum.AnimationPriority.Core;
+	const actionPriority = isR15 ? Enum.AnimationPriority.Action : Enum.AnimationPriority.Core;
+	type TrackName = "idle" | "walk" | "run" | "jump" | "fall";
 
-	let currentTrack: keyof typeof tracks | undefined;
-	function play(name: keyof typeof tracks, fade: number) {
-		if (currentTrack === name) return;
-		if (currentTrack && tracks[currentTrack]) tracks[currentTrack]!.Stop(fade);
-		currentTrack = name;
-		tracks[name]?.Play(fade);
+	let currentName: TrackName | undefined;
+	let currentTrack: AnimationTrack | undefined;
+
+	function animationId(name: TrackName) {
+		if (name === "idle" && !isR15) {
+			return math.random(1, 10) === 10 ? anims.R6.idleAlt : anims.R6.idle;
+		}
+		if (name === "walk") return set.walk;
+		if (name === "run") return set.run;
+		if (name === "jump") return set.jump;
+		if (name === "fall") return set.fall;
+		return set.idle;
 	}
 
-	function playMove() {
-		const speed = hum.WalkSpeed * math.min(keys.move.Magnitude, 1);
-		const name = speed > 10 && tracks.run ? "run" : "walk";
+	function animationPriority(name: TrackName) {
+		if (name === "walk" || name === "run") return movePriority;
+		if (name === "jump" || name === "fall") return actionPriority;
+		return idlePriority;
+	}
+
+	function animationLooped(name: TrackName) {
+		return name !== "jump";
+	}
+
+	function play(name: TrackName, fade: number) {
+		if (currentName === name && currentTrack?.IsPlaying) return;
+		const id = animationId(name);
+		const track = createTrack(anim, id, animationPriority(name), animationLooped(name));
+		if (!track) return;
+		if (currentTrack) {
+			currentTrack.Stop(fade);
+			currentTrack.Destroy();
+		}
+		currentName = name;
+		currentTrack = track;
+		track.Play(fade);
+	}
+
+	function setAnimationSpeed(speed: number) {
+		currentTrack?.AdjustSpeed(speed);
+	}
+
+	function moveSpeed() {
+		const [, root] = charParts(char);
+		const flatVelocity = root
+			? new Vector3(root.AssemblyLinearVelocity.X, 0, root.AssemblyLinearVelocity.Z).Magnitude
+			: 0;
+		const inputSpeed = hum.WalkSpeed * math.min(keys.move.Magnitude, 1);
+		return math.max(flatVelocity, inputSpeed);
+	}
+
+	function playMove(speed = moveSpeed()) {
+		if (!isR15) {
+			play("walk", 0.1);
+			setAnimationSpeed(math.max(speed / 14.5, 0.1));
+			return;
+		}
+		const name = speed > 7 && set.run ? "run" : "walk";
 		play(name, 0.15);
-		tracks[name]?.AdjustSpeed(math.max(speed / 16, 0.1));
+		setAnimationSpeed(math.max(speed / 16, 0.1));
 	}
 
+	let jumpTime = 0;
+	let lastTick = os.clock();
 	let cn: RBXScriptConnection;
 	cn = runService.PreAnimation.Connect(() => {
 		if (!sessionModel || !sessionModel.Parent || !hum.Parent) { cn.Disconnect(); return; }
+		const now = os.clock();
+		const dt = now - lastTick;
+		lastTick = now;
+		if (jumpTime > 0) jumpTime = math.max(jumpTime - dt, 0);
+
 		const st = hum.GetState();
-		if (busy) {
-			if (keys.move.Magnitude > 0.05) {
-				playMove();
-			} else play("idle", 0.2);
-		} else if (st === Enum.HumanoidStateType.Jumping) {
+		const speed = moveSpeed();
+		const moving = speed > 1.5;
+		if (st === Enum.HumanoidStateType.Jumping || hum.Jump) {
+			jumpTime = 0.3;
 			play("jump", 0.1);
 		} else if (st === Enum.HumanoidStateType.Freefall || st === Enum.HumanoidStateType.FallingDown) {
+			if (jumpTime > 0) {
+				play("jump", 0.1);
+				return;
+			}
 			play("fall", 0.2);
-		} else if (keys.move.Magnitude > 0.05) {
-			playMove();
-		} else play("idle", 0.2);
+		} else if (moving || busy) {
+			playMove(speed);
+		} else {
+			play("idle", 0.2);
+		}
 	});
 
 	char.Destroying.Once(() => {
 		cn.Disconnect();
-		for (const [, t] of pairs(tracks)) {
-			if (t) { t.Stop(0); t.Destroy(); }
+		if (currentTrack) {
+			currentTrack.Stop(0);
+			currentTrack.Destroy();
 		}
 	});
 }
@@ -858,7 +964,7 @@ function spawnSessionModel() {
 
 	sessionModel = g;
 	runtime.sessionModel = g;
-	animateSessionModel(g, sessionHum, char);
+	animateSessionModel(g, sessionHum);
 
 	if (cam) cam.CameraSubject = sessionHum;
 	return $tuple(g, sessionHum, sessionRoot);
@@ -1182,8 +1288,9 @@ track(runService.PreSimulation.Connect(() => {
 	setFlingDestroyH();
 	saveHumanoidState(hum);
 	maskChar(char);
-	saveHumanoidState(hum);
 	hum.AutoRotate = false;
+	hum.RequiresNeck = false;
+	hum.BreakJointsOnDeath = false;
 	if (hum.WalkSpeed < 1) hum.WalkSpeed = 16;
 	if (hum.JumpPower < 1) hum.JumpPower = 50;
 	hum.ChangeState(Enum.HumanoidStateType.Freefall);
@@ -1210,6 +1317,9 @@ runtime.util = { predict, getPart };
 env.nbf9000 = runtime;
 bindCharacter(localPlayer.Character);
 track(localPlayer.CharacterAdded.Connect((char) => bindCharacter(char)));
+track(players.PlayerAdded.Connect(() => updateWatermark()));
+track(players.PlayerRemoving.Connect(() => task.defer(updateWatermark)));
+updateWatermark();
 if (config.intro !== false) playIntro();
 
 // congrats you read all of it
