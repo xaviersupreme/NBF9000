@@ -1,7 +1,6 @@
-declare function getgenv(): { nbf9000?: Runtime };
+declare function getgenv(): { nbf9000?: Runtime; config?: Config };
 declare function sethiddenproperty(obj: Instance, prop: string, val: unknown): void;
 declare function getcustomasset(path: string): string;
-declare function getsynasset(path: string): string;
 declare function isfile(path: string): boolean;
 declare function readfile(path: string): string;
 declare function writefile(path: string, data: string): void;
@@ -22,6 +21,11 @@ interface Runtime {
 	};
 }
 
+interface Config {
+	intro?: boolean;
+	method?: Method;
+}
+
 interface QueueItem {
 	tgt: Tgt;
 	dur?: number;
@@ -39,9 +43,13 @@ interface SavedHumanoidState {
 	useJumpPower: boolean;
 }
 
-const minIntroAssetBytes = 100000;
+const env = getgenv();
+const config = env.config ?? (env.config = {
+	intro: true,
+	method: "weld" as Method,
+});
 
-let method: Method = "weld"; // "weld" or "tp"
+let method: Method = config.method === "tp" ? "tp" : "weld";
 
 
 const anims = {
@@ -74,7 +82,7 @@ const localPlayer = players.LocalPlayer;
 const mouse = localPlayer.GetMouse();
 let cam = world.CurrentCamera;
 
-const oldRuntime = getgenv().nbf9000;
+const oldRuntime = env.nbf9000;
 let oldStop: (() => void) | undefined;
 let oldDestroyHeight = world.FallenPartsDestroyHeight;
 if (oldRuntime) {
@@ -235,11 +243,9 @@ function customAsset(path: string) { // this is really bad ngl, but it allows fo
 	const [hasFile, fileOk] = pcall(() => isfile(path));
 	if (hasFile && fileOk) {
 		const [readOk, data] = pcall(() => readfile(path));
-		if (readOk && typeIs(data, "string") && data.size() < minIntroAssetBytes) return;
+		if (readOk && typeIs(data, "string") && data.size() < 100000) return;
 		const [ok, id] = pcall(() => getcustomasset(path));
 		if (ok && typeIs(id, "string") && id.size() > 0) return id;
-		const [synOk, synId] = pcall(() => getsynasset(path));
-		if (synOk && typeIs(synId, "string") && synId.size() > 0) return synId;
 	}
 }
 
@@ -253,8 +259,8 @@ function introAsset() {
 	pcall(() => {
 		pcall(() => makefolder("assets"));
 		const httpGet = (game as unknown as { [key: string]: (self: DataModel, url: string) => string })["HttpGet"];
-		const data = httpGet(game, "https://raw.githubusercontent.com/xaviersupreme/nanny-bean-flicker-9000/main/assets/nbf9000-intro.mp3");
-		if (data.size() > minIntroAssetBytes) writefile(path, data);
+		const data = httpGet(game, "https://raw.githubusercontent.com/xaviersupreme/nbf9000/main/assets/nbf9000-intro.mp3");
+		if (data.size() > 100000) writefile(path, data);
 	});
 
 	const asset = customAsset(path);
@@ -1201,9 +1207,9 @@ runtime.oldDestroyHeight = originalDestroyHeight;
 runtime.sessionModel = sessionModel;
 runtime.util = { predict, getPart };
 
-getgenv().nbf9000 = runtime;
+env.nbf9000 = runtime;
 bindCharacter(localPlayer.Character);
 track(localPlayer.CharacterAdded.Connect((char) => bindCharacter(char)));
-playIntro();
+if (config.intro !== false) playIntro();
 
 // congrats you read all of it

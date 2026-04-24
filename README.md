@@ -7,7 +7,12 @@ This is the official source repository for the script.
 Use the latest release build:
 
 ```lua
-loadstring(game:HttpGet("https://github.com/xaviersupreme/nanny-bean-flicker-9000/releases/latest/download/nbf9000.client.luau"))()
+getgenv().config = {
+    intro = true, -- true or false
+    method = "weld", -- weld or tp
+}
+
+loadstring(game:HttpGet("https://github.com/xaviersupreme/nbf9000/releases/latest/download/nbf9000.client.luau"))()
 ```
 
 ## Features:
