@@ -244,7 +244,7 @@ function customAsset(path: string) { // this is really bad ngl, but it allows fo
 }
 
 function introAsset() {
-	const path = "assets/foreign.mp3";
+	const path = "assets/nbf9000-intro.mp3";
 	for (const p of [path]) {
 		const asset = customAsset(p);
 		if (asset) return asset;
@@ -253,12 +253,12 @@ function introAsset() {
 	pcall(() => {
 		pcall(() => makefolder("assets"));
 		const httpGet = (game as unknown as { [key: string]: (self: DataModel, url: string) => string })["HttpGet"];
-		const data = httpGet(game, "https://raw.githubusercontent.com/xaviersupreme/nanny-bean-flicker-9000/main/assets/foreign.mp3");
+		const data = httpGet(game, "https://raw.githubusercontent.com/xaviersupreme/nanny-bean-flicker-9000/main/assets/nbf9000-intro.mp3");
 		if (data.size() > minIntroAssetBytes) writefile(path, data);
 	});
 
 	const asset = customAsset(path);
-	if (!asset) warn("nbf9000 intro sound missing: assets/foreign.mp3 did not download or is not a valid mp3");
+	if (!asset) warn("nbf9000 intro sound missing: assets/nbf9000-intro.mp3 did not download or is not a valid mp3");
 	return asset;
 }
 
@@ -278,7 +278,7 @@ function playIntro() {
 	const asset = introAsset();
 	if (asset) {
 		const snd = new Instance("Sound");
-		snd.Name = "foreign";
+		snd.Name = "nbf9000Intro";
 		snd.SoundId = asset;
 		snd.Volume = 3;
 		snd.Looped = false;
@@ -369,7 +369,7 @@ function playIntro() {
 	top.ZIndex = 4;
 	top.Parent = card;
 
-	const title = makeIntroText(card, "nanny bean flicker 9000", 28, 45, true);
+	const title = makeIntroText(card, "NBF9000", 28, 45, true);
 	const sub = makeIntroText(card, ":3 :3 :3 :3 :3 :3 :3", 13, 78);
 	sub.TextTransparency = 0.12;
 	const boot = makeIntroText(card, "ctrl+mb1 / tap player", 12, 100);

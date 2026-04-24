@@ -1,5 +1,5 @@
-# <p align="center">nanny bean flicker 9000</p>
-<p align="center">NaN click fling witha cool ass intro </p>
+# <p align="center">nbf9000</p>
+<p align="center">Fast ass fling witha cool ass intro </p>
 
 This is the official source repository for the script.
 
@@ -7,7 +7,7 @@ This is the official source repository for the script.
 Use the latest release build:
 
 ```lua
-loadstring(game:HttpGet("https://github.com/xaviersupreme/nanny-bean-flicker-9000/releases/latest/download/clickfling.client.luau"))()
+loadstring(game:HttpGet("https://github.com/xaviersupreme/nanny-bean-flicker-9000/releases/latest/download/nbf9000.client.luau"))()
 ```
 
 ## Features:
