@@ -1,7 +1,5 @@
-# <p align="center">nbf9000</p>
-<p align="center">Fast ass fling witha cool ass intro </p>
-
-This is the official source repository for the script.
+# <p align="center">NBF9000</p>
+### <p align="center"> fast ass fling with a cool ass intro </p>
 
 ## Loadstring
 Use the latest release build:
