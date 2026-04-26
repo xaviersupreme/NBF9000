@@ -922,7 +922,7 @@ function noCollideTarget(tgt: Tgt) {
 
 function maskChar(char?: Model) {
 	if (!char) return;
-	if (maskedChar === char) return;
+	if (maskedChar && maskedChar !== char) restoreAlpha();
 	maskedChar = char;
 	for (const obj of char.GetDescendants()) {
 		if (obj.IsA("BasePart")) {
@@ -1451,9 +1451,10 @@ track(inputService.TouchTap.Connect((touchPositions, gp) => {
 }));
 
 // render
-runService.BindToRenderStep("nbf9000", Enum.RenderPriority.Input.Value + 1, () => {
+runService.BindToRenderStep("nbf9000", Enum.RenderPriority.Last.Value, () => {
 	updateGuide();
 	updateHrpOutlines();
+	if (sessionModel) maskChar(localPlayer.Character);
 	if (inputService.GetFocusedTextBox()) clearMove();
 	else calcMove();
 });
