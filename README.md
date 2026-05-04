@@ -40,6 +40,7 @@ getgenv().config = {
     intro = true, -- true or false
     method = "weld", -- weld or tp
     showHRPs = false, -- true or false
+    clickThroughWalls = false, -- true or false
 }
 
 loadstring(game:HttpGet("https://github.com/xaviersupreme/nbf9000/releases/latest/download/nbf9000.client.luau"))()

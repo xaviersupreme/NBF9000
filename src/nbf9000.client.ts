@@ -26,6 +26,7 @@ interface Config {
 	intro?: boolean;
 	method?: Method;
 	showHRPs?: boolean;
+	clickThroughWalls?: boolean;
 }
 
 interface QueueItem {
@@ -34,6 +35,7 @@ interface QueueItem {
 	end?: number;
 	start?: number;
 	startPos?: Vector3;
+	lastPosition?: Vector3;
 }
 
 interface SavedHumanoidState {
@@ -45,6 +47,11 @@ interface SavedHumanoidState {
 	useJumpPower: boolean;
 	requiresNeck: boolean;
 	breakJointsOnDeath: boolean;
+}
+
+interface SavedPartState {
+	transparency: number;
+	collision: boolean;
 }
 
 interface IntroLoaderState {
@@ -60,6 +67,7 @@ const config = env.config ?? (env.config = {
 	intro: true,
 	method: "weld" as Method,
 	showHRPs: false,
+	clickThroughWalls: false,
 });
 
 let method: Method = config.method === "tp" ? "tp" : "weld";
@@ -125,11 +133,13 @@ const runtime = {} as Runtime;
 const connections = new Array<RBXScriptConnection>();
 const queue = new Array<QueueItem>();
 const cooldowns = new Set<Instance>();
-const savedTransparency = new Map<BasePart, number>();
-const savedCollision = new Map<BasePart, boolean>();
+const savedPartState = new Map<BasePart, SavedPartState>();
+const savedScriptDisabled = new Map<BaseScript, boolean>();
 const targetCollision = new Map<BasePart, boolean>();
 
 let sessionModel: Model | undefined;
+let sessionRootAnchored = false;
+let sessionAnchorFrames = 0;
 let guidePart: BasePart | undefined;
 let guideOutline: SelectionBox | undefined;
 let guideOutlineAlt: SelectionBox | undefined;
@@ -152,6 +162,7 @@ let lastTapPos = Vector3.zero;
 const hrpOutlines = new Map<Player, SelectionBox>();
 const loaderFrames = ["|", "/", "-", "\\"];
 const guideSpinOffset = new Vector3(math.random(), math.random(), math.random()).mul(math.pi * 2);
+const mainTrackPhaseKey = "__nbf9000_main_phase";
 
 const keys = {
 	w: false, a: false, s: false, d: false,
@@ -859,6 +870,7 @@ function resetRoot() {
 	if (hum) {
 		hum.AutoRotate = true;
 		pcall(() => sethiddenproperty(hum, "MoveDirectionInternal", Vector3.zero));
+		pcall(() => sethiddenproperty(hum, "NetworkHumanoidState", Enum.HumanoidStateType.Running));
 	}
 }
 
@@ -890,15 +902,31 @@ function restoreHumanoidState() {
 }
 
 function restoreAlpha() {
-	for (const [p, a] of savedTransparency) {
-		if (p.Parent) p.LocalTransparencyModifier = a;
+	for (const [p, state] of savedPartState) {
+		if (p.Parent) {
+			p.LocalTransparencyModifier = state.transparency;
+			p.CanCollide = state.collision;
+		}
 	}
-	for (const [p, c] of savedCollision) {
-		if (p.Parent) p.CanCollide = c;
-	}
-	savedTransparency.clear();
-	savedCollision.clear();
+	savedPartState.clear();
 	maskedChar = undefined;
+}
+
+function suspendAnimate(char?: Model) {
+	if (!char) return;
+	for (const obj of char.GetDescendants()) {
+		if (obj.IsA("LocalScript") && obj.Name === "Animate") {
+			if (!savedScriptDisabled.has(obj)) savedScriptDisabled.set(obj, obj.Disabled);
+			obj.Disabled = true;
+		}
+	}
+}
+
+function restoreAnimate() {
+	for (const [script, disabled] of savedScriptDisabled) {
+		if (script.Parent) script.Disabled = disabled;
+	}
+	savedScriptDisabled.clear();
 }
 
 function restoreTargetCollision() {
@@ -924,34 +952,160 @@ function maskChar(char?: Model) {
 	if (!char) return;
 	if (maskedChar && maskedChar !== char) restoreAlpha();
 	maskedChar = char;
+	suspendAnimate(char);
 	for (const obj of char.GetDescendants()) {
 		if (obj.IsA("BasePart")) {
-			if (!savedTransparency.has(obj)) savedTransparency.set(obj, obj.LocalTransparencyModifier);
-			if (!savedCollision.has(obj)) savedCollision.set(obj, obj.CanCollide);
+			if (!savedPartState.has(obj)) {
+				savedPartState.set(obj, {
+					transparency: obj.LocalTransparencyModifier,
+					collision: obj.CanCollide,
+				});
+			}
 			obj.LocalTransparencyModifier = 1;
 			obj.CanCollide = false;
-			obj.Velocity = Vector3.zero;
-			obj.RotVelocity = Vector3.zero;
+			zeroPartVelocity(obj);
 		}
 	}
+}
+
+function zeroPartVelocity(part: BasePart) {
+	part.AssemblyLinearVelocity = Vector3.zero;
+	part.AssemblyAngularVelocity = Vector3.zero;
+	part.Velocity = Vector3.zero;
+	part.RotVelocity = Vector3.zero;
+}
+
+function trackAnimationId(track: AnimationTrack) {
+	const anim = (track as unknown as { Animation?: Animation }).Animation;
+	const id = anim?.AnimationId;
+	return typeIs(id, "string") && id.size() > 0 ? id : undefined;
+}
+
+function isAirAnimationId(id?: string) {
+	return id === anims.R6.jump
+		|| id === anims.R6.fall
+		|| id === anims.R15.jump
+		|| id === anims.R15.fall;
+}
+
+function snapshotTrackPhases(model?: Model) {
+	const hum = model?.FindFirstChildOfClass("Humanoid");
+	const animator = hum?.FindFirstChildOfClass("Animator");
+	const phases = new Map<string, number>();
+	if (!animator) return phases;
+	let bestPhase: number | undefined;
+	let bestWeight = -1;
+	for (const track of animator.GetPlayingAnimationTracks()) {
+		const id = trackAnimationId(track);
+		if (id) phases.set(id, track.TimePosition);
+		if (!isAirAnimationId(id) && track.WeightCurrent >= bestWeight) {
+			bestPhase = track.TimePosition;
+			bestWeight = track.WeightCurrent;
+		}
+	}
+	if (bestPhase !== undefined) phases.set(mainTrackPhaseKey, bestPhase);
+	return phases;
+}
+
+function applyTrackPhases(hum: Humanoid | undefined, phases?: Map<string, number>) {
+	if (!hum || !phases) return;
+	const animator = hum?.FindFirstChildOfClass("Animator");
+	if (!animator) return;
+	for (const track of animator.GetPlayingAnimationTracks()) {
+		const id = trackAnimationId(track);
+		const time = (id ? phases.get(id) : undefined) ?? (!isAirAnimationId(id) ? phases.get(mainTrackPhaseKey) : undefined);
+		if (time !== undefined) {
+			pcall(() => {
+				const len = track.Length;
+				track.TimePosition = len > 0 ? time % len : time;
+			});
+		}
+	}
+}
+
+function stopAirTracks(hum?: Humanoid) {
+	const animator = hum?.FindFirstChildOfClass("Animator");
+	if (!animator) return;
+	for (const track of animator.GetPlayingAnimationTracks()) {
+		if (isAirAnimationId(trackAnimationId(track))) track.Stop(0);
+	}
+}
+
+function snapshotPose(model?: Model) {
+	const pose = new Map<string, CFrame>();
+	if (!model) return pose;
+	for (const obj of model.GetDescendants()) {
+		if (obj.IsA("Motor6D")) {
+			pose.set(obj.Name, obj.Transform);
+		}
+	}
+	return pose;
+}
+
+function applyPose(model: Model | undefined, pose?: Map<string, CFrame>) {
+	if (!model || !pose) return;
+	for (const obj of model.GetDescendants()) {
+		if (obj.IsA("Motor6D")) {
+			const transform = pose.get(obj.Name);
+			if (transform) obj.Transform = transform;
+		}
+	}
+}
+
+function setCameraSubject(subject: Humanoid | BasePart) {
+	cam = world.CurrentCamera;
+	if (!cam) return;
+	const cf = cam.CFrame;
+	cam.CameraSubject = subject;
+	cam.CFrame = cf;
+}
+
+function setSessionRootAnchored(anchored: boolean) {
+	const [, root] = charParts(sessionModel);
+	if (!root) return;
+	root.Anchored = anchored;
+	sessionRootAnchored = anchored;
+	if (anchored) zeroPartVelocity(root);
+	else {
+		zeroPartVelocity(root);
+		const [hum] = charParts(sessionModel);
+		if (hum) hum.ChangeState(Enum.HumanoidStateType.RunningNoPhysics);
+	}
+}
+
+function tickSessionSpawnAnchor() {
+	if (!sessionRootAnchored) return;
+	if (sessionAnchorFrames > 0) {
+		sessionAnchorFrames--;
+		return;
+	}
+	setSessionRootAnchored(false);
 }
 
 function clearSessionModel(sync: boolean) {
 	const model = sessionModel;
 	const [, sessionRoot] = charParts(model);
-	const [hum, rp] = charParts(localPlayer.Character);
+	const char = localPlayer.Character;
+	const [hum, rp] = charParts(char);
 	const retCf = sync && sessionRoot ? sessionRoot.CFrame : undefined;
-	const retVel = sync && sessionRoot ? sessionRoot.AssemblyLinearVelocity : Vector3.zero;
+	const retVelRaw = sync && sessionRoot ? sessionRoot.AssemblyLinearVelocity : Vector3.zero;
+	const retVel = retVelRaw.Y < 0.5 ? new Vector3(retVelRaw.X, 0, retVelRaw.Z) : retVelRaw;
+	const retPose = sync ? snapshotPose(model) : undefined;
+	const retPhases = sync ? snapshotTrackPhases(model) : undefined;
 
 	busy = false;
 
 	if (model) model.Destroy();
 	sessionModel = undefined;
 	runtime.sessionModel = undefined;
+	sessionRootAnchored = false;
+	sessionAnchorFrames = 0;
 	restoreTargetCollision();
-	restoreAlpha();
 	resetRoot();
 	restoreHumanoidState();
+	stopAirTracks(hum);
+	applyTrackPhases(hum, retPhases);
+	applyPose(char, retPose);
 	if (retCf && rp) {
 		rp.CFrame = retCf;
 		rp.AssemblyLinearVelocity = retVel;
@@ -959,10 +1113,51 @@ function clearSessionModel(sync: boolean) {
 		rp.Velocity = retVel;
 		rp.RotVelocity = Vector3.zero;
 	}
+	if (sync && hum) {
+		hum.Jump = false;
+		hum.Sit = false;
+		hum.PlatformStand = false;
+		pcall(() => sethiddenproperty(hum, "MoveDirectionInternal", Vector3.zero));
+		pcall(() => sethiddenproperty(hum, "NetworkHumanoidState", Enum.HumanoidStateType.Running));
+		hum.ChangeState(Enum.HumanoidStateType.RunningNoPhysics);
+		task.defer(() => {
+			if (!hum.Parent) {
+				restoreAnimate();
+				restoreAlpha();
+				return;
+			}
+			hum.Jump = false;
+			hum.Sit = false;
+			hum.PlatformStand = false;
+			pcall(() => sethiddenproperty(hum, "MoveDirectionInternal", Vector3.zero));
+			pcall(() => sethiddenproperty(hum, "NetworkHumanoidState", Enum.HumanoidStateType.Running));
+			stopAirTracks(hum);
+			applyTrackPhases(hum, retPhases);
+			hum.ChangeState(Enum.HumanoidStateType.Running);
+			applyPose(char, retPose);
+			restoreAlpha();
+			setCameraSubject(hum);
+			task.spawn(() => {
+				if (runService.PreAnimation) runService.PreAnimation.Wait();
+				else runService.RenderStepped.Wait();
+				if (!hum.Parent) {
+					return;
+				}
+				pcall(() => sethiddenproperty(hum, "NetworkHumanoidState", Enum.HumanoidStateType.Running));
+				hum.ChangeState(Enum.HumanoidStateType.Running);
+				applyTrackPhases(hum, retPhases);
+				applyPose(char, retPose);
+				restoreAnimate();
+			});
+		});
+	} else {
+		restoreAnimate();
+		restoreAlpha();
+	}
 	setDestroyH(originalDestroyHeight);
 	destroyHeightSet = false;
 
-	if (hum && cam) cam.CameraSubject = hum;
+	if ((!sync || !hum) && hum) setCameraSubject(hum);
 }
 
 function dropDeadChar(char?: Model) {
@@ -1008,15 +1203,12 @@ function bindCharacter(char?: Model) {
 
 function prepareSessionModel(char: Model) {
 	for (const obj of char.GetDescendants()) {
-		if (obj.IsA("Script") || obj.IsA("LocalScript") || obj.IsA("Animator")) {
+		if (obj.IsA("Script") || obj.IsA("LocalScript")) {
 			obj.Destroy();
-		} else if (obj.IsA("Motor6D")) {
-			obj.Transform = CFrame.identity;
 		} else if (obj.IsA("BasePart")) {
 			obj.Anchored = false;
 			obj.CanTouch = false;
 			obj.CanQuery = false;
-			obj.CanCollide = obj.Name === "HumanoidRootPart";
 			obj.LocalTransparencyModifier = 0;
 		} else if (obj.IsA("ForceField")) {
 			obj.Visible = false;
@@ -1037,8 +1229,8 @@ function createTrack(anim: Animator, id: string | undefined, pri: Enum.Animation
 	}
 }
 
-function animateSessionModel(char: Model, hum: Humanoid) {
-	const anim = new Instance("Animator");
+function animateSessionModel(char: Model, hum: Humanoid, phases?: Map<string, number>) {
+	const anim = hum.FindFirstChildOfClass("Animator") ?? new Instance("Animator");
 	anim.Parent = hum;
 
 	const isR15 = hum.RigType === Enum.HumanoidRigType.R15;
@@ -1084,6 +1276,13 @@ function animateSessionModel(char: Model, hum: Humanoid) {
 		currentName = name;
 		currentTrack = track;
 		track.Play(fade);
+		const phase = (id ? phases?.get(id) : undefined) ?? (!isAirAnimationId(id) ? phases?.get(mainTrackPhaseKey) : undefined);
+		if (phase !== undefined) {
+			pcall(() => {
+				const len = track.Length;
+				track.TimePosition = len > 0 ? phase % len : phase;
+			});
+		}
 	}
 
 	function setAnimationSpeed(speed: number) {
@@ -1123,6 +1322,11 @@ function animateSessionModel(char: Model, hum: Humanoid) {
 		const st = hum.GetState();
 		const speed = moveSpeed();
 		const inputMoving = keys.move.Magnitude > 0.05;
+		if (sessionRootAnchored) {
+			if (inputMoving) playMove(speed);
+			else play("idle", 0.1);
+			return;
+		}
 		const moving = inputMoving || speed > (busy ? 3.4 : 4.2);
 		if (st === Enum.HumanoidStateType.Jumping || hum.Jump) {
 			jumpTime = 0.3;
@@ -1153,6 +1357,9 @@ function spawnSessionModel() {
 	const char = localPlayer.Character;
 	const [, rp] = charParts(char);
 	if (!char || !rp) return;
+	const spawnPivot = char.GetPivot();
+	const spawnPose = snapshotPose(char);
+	const spawnPhases = snapshotTrackPhases(char);
 
 	if (sessionModel) sessionModel.Destroy();
 
@@ -1165,7 +1372,7 @@ function spawnSessionModel() {
 	g.Name = "nbf9000Rig";
 	prepareSessionModel(g);
 	g.Parent = world;
-	g.PivotTo(rp.CFrame);
+	g.PivotTo(spawnPivot);
 
 	const [sessionHum, sessionRoot] = charParts(g);
 	if (!sessionHum || !sessionRoot) { g.Destroy(); return; }
@@ -1180,12 +1387,18 @@ function spawnSessionModel() {
 	sessionHum.AutoRotate = true;
 	sessionHum.SetStateEnabled(Enum.HumanoidStateType.Dead, false);
 	sessionRoot.RootPriority = 67;
+	g.PivotTo(spawnPivot);
+	zeroPartVelocity(sessionRoot);
+	sessionRoot.Anchored = true;
+	sessionRootAnchored = true;
+	sessionAnchorFrames = 1;
+	sessionHum.ChangeState(Enum.HumanoidStateType.RunningNoPhysics);
 
 	sessionModel = g;
 	runtime.sessionModel = g;
-	animateSessionModel(g, sessionHum);
+	animateSessionModel(g, sessionHum, spawnPhases);
+	applyPose(g, spawnPose);
 
-	if (cam) cam.CameraSubject = sessionHum;
 	return $tuple(g, sessionHum, sessionRoot);
 }
 
@@ -1220,7 +1433,7 @@ function flingPart(tgt: Tgt) {
 	}
 }
 
-function predict(tgt: Tgt): LuaTuple<[CFrame, boolean]> {
+function predict(tgt: Tgt, item?: QueueItem): LuaTuple<[CFrame, boolean]> {
 	if (typeIs(tgt, "Instance")) {
 		const part = flingPart(tgt);
 		if (part) {
@@ -1230,12 +1443,12 @@ function predict(tgt: Tgt): LuaTuple<[CFrame, boolean]> {
 			const lead = method === "weld" ? 0.045 : 0.08 + math.sin(t * 15) * 0.02;
 			let cf = new CFrame(part.Position);
 
-			const oldPos = part.GetAttribute("lastPosition");
-			if (typeIs(oldPos, "Vector3") && part.Position.sub(oldPos).Magnitude > 200) {
-				part.SetAttribute("lastPosition", undefined);
+			const oldPos = item?.lastPosition;
+			if (oldPos && part.Position.sub(oldPos).Magnitude > 200) {
+				if (item) item.lastPosition = undefined;
 				return $tuple(cf, true);
 			}
-			part.SetAttribute("lastPosition", part.Position);
+			if (item) item.lastPosition = part.Position;
 
 			cf = cf.add(part.AssemblyLinearVelocity.mul(lead));
 			if (method !== "weld") {
@@ -1268,8 +1481,8 @@ function shouldBackOff(item: QueueItem) {
 	if (now - item.start < 0.12) return false;
 
 	const velocity = part.AssemblyLinearVelocity;
-	if (velocity.Magnitude > 85 || math.abs(velocity.Y) > 60) return true;
-	if (part.Position.sub(item.startPos).Magnitude > 35) return true;
+	if (velocity.Magnitude > 150 || math.abs(velocity.Y) > 115) return true;
+	if (part.Position.sub(item.startPos).Magnitude > 80) return true;
 
 	return false;
 }
@@ -1282,6 +1495,29 @@ function getPart(tgt: Tgt) {
 			return char ? targetPart(char) ?? tgt : tgt;
 		}
 	}
+}
+
+function throughWallTarget(pos: Vector3, radius = 46) {
+	if (config.clickThroughWalls !== true) return;
+	cam = world.CurrentCamera;
+	if (!cam) return;
+
+	let best: BasePart | undefined;
+	let bestScore = radius;
+	for (const player of players.GetPlayers()) {
+		if (player === localPlayer) continue;
+		const char = player.Character;
+		const [hum, root] = charParts(char);
+		if (!char || !root || isDead(hum)) continue;
+		const [screen, visible] = cam.WorldToViewportPoint(root.Position);
+		if (!visible || screen.Z <= 0) continue;
+		const dist = new Vector2(screen.X - pos.X, screen.Y - pos.Y).Magnitude;
+		if (dist < bestScore) {
+			best = root;
+			bestScore = dist;
+		}
+	}
+	return best;
 }
 
 function doHighlight(tgt: Tgt) {
@@ -1328,7 +1564,10 @@ function fling(tgt: Tgt, dur?: number) {
 	queue.push({ tgt, dur });
 	busy = true;
 	if (!sessionModel) spawnSessionModel();
+	resetRoot();
 	maskChar(localPlayer.Character);
+	const [sessionHum] = charParts(sessionModel);
+	if (sessionHum) setCameraSubject(sessionHum);
 	doHighlight(tgt);
 	return true;
 }
@@ -1360,7 +1599,8 @@ function clicked(pos: Vector3, touchFirst: boolean) {
 		const t = rayTarget(pos);
 		if (t) return t;
 	}
-	return mouse.Target && charFromPart(mouse.Target) ? mouse.Target : rayTarget(pos);
+	if (mouse.Target && charFromPart(mouse.Target)) return mouse.Target;
+	return rayTarget(pos) ?? throughWallTarget(pos, touchFirst ? 64 : 46);
 }
 
 function tryFlingTap(pos: Vector3, touchFirst: boolean) {
@@ -1455,7 +1695,7 @@ runService.BindToRenderStep("nbf9000", Enum.RenderPriority.Last.Value, () => {
 	updateGuide();
 	updateHrpOutlines();
 	if (sessionModel) maskChar(localPlayer.Character);
-	if (inputService.GetFocusedTextBox()) clearMove();
+	if (guiService.MenuIsOpen || inputService.GetFocusedTextBox()) clearMove();
 	else calcMove();
 });
 
@@ -1463,9 +1703,12 @@ track(runService.PreAnimation.Connect(() => {
 	const [sessionHum, sessionRoot] = charParts(sessionModel);
 	if (!sessionModel || !sessionHum || !sessionRoot) return;
 	cam = world.CurrentCamera;
-	if (cam && cam.CameraSubject !== sessionHum) cam.CameraSubject = sessionHum;
+	if (cam && cam.CameraSubject !== sessionHum) setCameraSubject(sessionHum);
 	const cf = cam?.CFrame ?? sessionRoot.CFrame;
 	const [, yaw] = cf.ToEulerAnglesYXZ();
+	if (inputService.GetFocusedTextBox()) clearMove();
+	else calcMove();
+	tickSessionSpawnAnchor();
 	sessionHum.Move(CFrame.Angles(0, yaw, 0).VectorToWorldSpace(keys.move));
 	sessionHum.Jump = keys.wantJump;
 }));
@@ -1487,20 +1730,20 @@ function doFling(rp: BasePart, hum: Humanoid, tgt: Tgt, cf: CFrame) {
 	const tp = getPart(tgt);
 	const rep = flingPart(tgt) ?? tp;
 	const useWeld = method === "weld" && tp !== undefined;
+	const t = os.clock();
+	const orbit = new Vector3(math.sin(t * 95) * 0.12, math.cos(t * 83) * 0.08, math.cos(t * 101) * 0.12);
 
-	if (!rp.IsGrounded()) {
-		if (useWeld) {
-			pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));
-			rp.CFrame = cf.add(new Vector3(0, 0, math.random(0, 1) * 0.005)) as CFrame;
-		} else {
-			rp.CFrame = new CFrame(cf.Position.add(new Vector3(0, 0, math.random(0, 1) * 0.005))).mul(CFrame.Angles(0, os.clock() * 15, 0)) as CFrame;
-			pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));
-		}
-		rp.Velocity = Vector3.zero;
-		rp.RotVelocity = Vector3.zero;
-		rp.AssemblyLinearVelocity = Vector3.zero;
-		rp.AssemblyAngularVelocity = Vector3.zero;
+	if (useWeld) {
+		pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));
+		rp.CFrame = cf.add(orbit) as CFrame;
+	} else {
+		rp.CFrame = new CFrame(cf.Position.add(orbit)).mul(CFrame.Angles(0, t * 18, 0)) as CFrame;
+		pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));
 	}
+	rp.Velocity = Vector3.zero;
+	rp.RotVelocity = Vector3.zero;
+	rp.AssemblyLinearVelocity = Vector3.zero;
+	rp.AssemblyAngularVelocity = Vector3.zero;
 
 	pcall(() => sethiddenproperty(hum, "MoveDirectionInternal", new Vector3(0 / 0, 0 / 0, 0 / 0)));
 	pcall(() => sethiddenproperty(hum, "NetworkHumanoidState", Enum.HumanoidStateType.Freefall));
@@ -1533,7 +1776,7 @@ track(runService.PreSimulation.Connect(() => {
 	if (!item) { clearSessionModel(true); return; }
 	if (shouldBackOff(item)) { queue.shift(); clearSessionModel(true); return; }
 
-	const [cf, done] = predict(item.tgt);
+	const [cf, done] = predict(item.tgt, item);
 	if (done) { queue.shift(); clearSessionModel(true); return; }
 
 	busy = true;
