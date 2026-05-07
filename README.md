@@ -51,7 +51,7 @@ loadstring(game:HttpGet("https://github.com/xaviersupreme/nbf9000/releases/lates
 - shitty optimization
 
 ## Pictures
-   <img src="./assets/introexample.gif" alt="f" width="450"/> <img src="./assets/flingexample.gif" alt="f" width="450"/>
+   <img src="./assets/introexample.gif" alt="f" width="650"/> <img src="./assets/flingexample.gif" alt="f" width="450"/>
 
 ## Building
 ```sh
