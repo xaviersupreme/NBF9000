@@ -11,6 +11,7 @@ type Method = "NaN" | "skidfling";
 type Tgt = Instance | CFrame | Vector3;
 type PlatformMode = "auto" | "pc" | "mobile";
 type TargetPriority = "mouse" | "closest" | "camera";
+type ThemeName = "Tokyo Night" | "RGB" | "ALONE" | "Crimson" | "r/masterhacker" | "Homer Simpson" | "Light RGB" | "Light ALONE" | "Roserika" | "FastTracker II Blue" | "Cherry Blossom" | "Sakura" | "Tomorrow Night 80s";
 
 interface Runtime {
 	stop?: () => void;
@@ -44,6 +45,7 @@ interface Config {
 	hideRealCharacter?: boolean;
 	clearInputOnMenu?: boolean;
 	lowMotion?: boolean;
+	theme?: ThemeName;
 	targetPriority?: TargetPriority;
 	platformMode?: PlatformMode;
 	mobileFlingTool?: boolean;
@@ -109,6 +111,7 @@ const config = env.config ?? (env.config = {
 	hideRealCharacter: true,
 	clearInputOnMenu: true,
 	lowMotion: false,
+	theme: "Tokyo Night" as ThemeName,
 	targetPriority: "mouse" as TargetPriority,
 	platformMode: "auto" as PlatformMode,
 	mobileFlingTool: true,
@@ -140,6 +143,7 @@ if (config.teamCheck === undefined) config.teamCheck = false;
 if (config.hideRealCharacter === undefined) config.hideRealCharacter = true;
 if (config.clearInputOnMenu === undefined) config.clearInputOnMenu = true;
 if (config.lowMotion === undefined) config.lowMotion = false;
+if (config.theme === undefined) config.theme = "Tokyo Night";
 if (config.targetPriority === undefined) config.targetPriority = "mouse";
 if (config.platformMode === undefined) config.platformMode = "auto";
 if (config.mobileFlingTool === undefined) config.mobileFlingTool = true;
@@ -252,6 +256,21 @@ let lastTapPos = Vector3.zero;
 const hrpOutlines = new Map<Player, SelectionBox>();
 const guideSpinOffset = new Vector3(math.random(), math.random(), math.random()).mul(math.pi * 2);
 const mainTrackPhaseKey = "__nbf9000_main_phase";
+const themeNames = [
+	"Tokyo Night",
+	"RGB",
+	"ALONE",
+	"Crimson",
+	"r/masterhacker",
+	"Homer Simpson",
+	"Light RGB",
+	"Light ALONE",
+	"Roserika",
+	"FastTracker II Blue",
+	"Cherry Blossom",
+	"Sakura",
+	"Tomorrow Night 80s",
+] as Array<ThemeName>;
 
 const keys = {
 	w: false, a: false, s: false, d: false,
@@ -268,36 +287,86 @@ function wrap(n: number) {
 	return ((n % 1) + 1) % 1;
 }
 
+interface UiTheme {
+	bg: Color3;
+	top: Color3;
+	surface: Color3;
+	depth: Color3;
+	text: Color3;
+	muted: Color3;
+	soft: Color3;
+	scroll: Color3;
+	accent: Array<Color3>;
+}
+
+function rgb(r: number, g: number, b: number) {
+	return Color3.fromRGB(r, g, b);
+}
+
+function currentThemeName() {
+	const name = config.theme;
+	for (const theme of themeNames) {
+		if (name === theme) return theme;
+	}
+	return "Tokyo Night" as ThemeName;
+}
+
+function currentTheme(): UiTheme {
+	const white = rgb(245, 245, 250);
+	switch (currentThemeName()) {
+		case "RGB":
+			return { bg: rgb(5, 5, 8), top: rgb(0, 0, 0), surface: rgb(9, 9, 14), depth: rgb(18, 18, 24), text: white, muted: rgb(178, 180, 190), soft: rgb(104, 108, 124), scroll: rgb(255, 255, 255), accent: [rgb(255, 64, 86), rgb(255, 199, 64), rgb(84, 255, 122), rgb(80, 210, 255), rgb(178, 112, 255)] };
+		case "ALONE":
+			return { bg: rgb(0, 0, 0), top: rgb(4, 4, 4), surface: rgb(5, 5, 5), depth: rgb(17, 17, 17), text: white, muted: rgb(184, 184, 184), soft: rgb(96, 96, 96), scroll: white, accent: [white, rgb(188, 188, 188), rgb(255, 255, 255)] };
+		case "Crimson":
+			return { bg: rgb(15, 0, 3), top: rgb(22, 0, 5), surface: rgb(12, 0, 4), depth: rgb(28, 4, 9), text: rgb(255, 236, 240), muted: rgb(204, 128, 142), soft: rgb(122, 55, 66), scroll: rgb(255, 64, 86), accent: [rgb(255, 33, 72), rgb(255, 91, 105), rgb(180, 0, 42)] };
+		case "r/masterhacker":
+			return { bg: rgb(0, 9, 0), top: rgb(0, 15, 0), surface: rgb(0, 10, 0), depth: rgb(0, 22, 0), text: rgb(188, 255, 188), muted: rgb(79, 214, 79), soft: rgb(28, 108, 28), scroll: rgb(0, 255, 64), accent: [rgb(0, 255, 70), rgb(90, 255, 144), rgb(0, 156, 48)] };
+		case "Homer Simpson":
+			return { bg: rgb(255, 239, 48), top: rgb(255, 218, 35), surface: rgb(255, 232, 57), depth: rgb(255, 246, 126), text: rgb(18, 18, 18), muted: rgb(66, 61, 35), soft: rgb(125, 112, 41), scroll: rgb(18, 18, 18), accent: [rgb(0, 90, 180), rgb(255, 255, 255), rgb(230, 70, 60)] };
+		case "Light RGB":
+			return { bg: rgb(246, 248, 255), top: rgb(238, 241, 250), surface: rgb(255, 255, 255), depth: rgb(234, 238, 248), text: rgb(10, 14, 24), muted: rgb(78, 86, 104), soft: rgb(145, 153, 170), scroll: rgb(80, 120, 255), accent: [rgb(255, 64, 86), rgb(255, 184, 64), rgb(42, 206, 100), rgb(45, 150, 255), rgb(160, 86, 255)] };
+		case "Light ALONE":
+			return { bg: rgb(250, 250, 250), top: rgb(238, 238, 238), surface: rgb(255, 255, 255), depth: rgb(232, 232, 232), text: rgb(0, 0, 0), muted: rgb(68, 68, 68), soft: rgb(142, 142, 142), scroll: rgb(0, 0, 0), accent: [rgb(0, 0, 0), rgb(94, 94, 94), rgb(0, 0, 0)] };
+		case "Roserika":
+			return { bg: rgb(38, 18, 4), top: rgb(54, 25, 5), surface: rgb(32, 14, 3), depth: rgb(72, 34, 8), text: rgb(255, 238, 215), muted: rgb(221, 154, 90), soft: rgb(132, 81, 36), scroll: rgb(255, 155, 54), accent: [rgb(255, 153, 43), rgb(255, 205, 107), rgb(84, 34, 5)] };
+		case "FastTracker II Blue":
+			return { bg: rgb(26, 31, 94), top: rgb(36, 42, 130), surface: rgb(22, 28, 86), depth: rgb(54, 63, 156), text: rgb(242, 245, 255), muted: rgb(170, 181, 255), soft: rgb(99, 110, 206), scroll: rgb(160, 176, 255), accent: [rgb(102, 110, 255), rgb(150, 170, 255), rgb(51, 55, 128)] };
+		case "Cherry Blossom":
+			return { bg: rgb(255, 224, 244), top: rgb(247, 171, 232), surface: rgb(255, 238, 249), depth: rgb(250, 203, 238), text: rgb(82, 28, 56), muted: rgb(117, 40, 75), soft: rgb(168, 93, 129), scroll: rgb(117, 40, 75), accent: [rgb(117, 40, 75), rgb(247, 171, 232), rgb(255, 255, 255)] };
+		case "Sakura":
+			return { bg: rgb(42, 13, 29), top: rgb(76, 28, 52), surface: rgb(35, 12, 26), depth: rgb(92, 35, 63), text: rgb(255, 237, 248), muted: rgb(247, 171, 232), soft: rgb(154, 86, 124), scroll: rgb(247, 171, 232), accent: [rgb(247, 171, 232), rgb(255, 220, 246), rgb(117, 40, 75)] };
+		case "Tomorrow Night 80s":
+			return { bg: rgb(39, 39, 39), top: rgb(45, 45, 45), surface: rgb(33, 33, 33), depth: rgb(52, 52, 52), text: rgb(222, 222, 222), muted: rgb(190, 190, 190), soft: rgb(115, 115, 115), scroll: rgb(190, 190, 190), accent: [rgb(204, 102, 102), rgb(240, 198, 116), rgb(181, 189, 104), rgb(129, 162, 190), rgb(178, 148, 187)] };
+		default:
+			return { bg: rgb(22, 22, 33), top: rgb(15, 15, 24), surface: rgb(8, 9, 15), depth: rgb(17, 17, 27), text: rgb(235, 235, 245), muted: rgb(174, 176, 190), soft: rgb(110, 112, 130), scroll: rgb(160, 180, 255), accent: [rgb(122, 162, 247), rgb(125, 207, 255), rgb(187, 154, 247), rgb(247, 118, 142), rgb(224, 175, 104)] };
+	}
+}
+
 function accentColor(n: number) {
-	const x = wrap(n) * 5;
+	const colors = currentTheme().accent;
+	const x = wrap(n) * colors.size();
 	const i = math.floor(x);
 	const a = x - i;
-	if (i === 0) return Color3.fromRGB(122, 162, 247).Lerp(Color3.fromRGB(125, 207, 255), a);
-	if (i === 1) return Color3.fromRGB(125, 207, 255).Lerp(Color3.fromRGB(187, 154, 247), a);
-	if (i === 2) return Color3.fromRGB(187, 154, 247).Lerp(Color3.fromRGB(247, 118, 142), a);
-	if (i === 3) return Color3.fromRGB(247, 118, 142).Lerp(Color3.fromRGB(224, 175, 104), a);
-	return Color3.fromRGB(224, 175, 104).Lerp(Color3.fromRGB(122, 162, 247), a);
+	return colors[i].Lerp(colors[(i + 1) % colors.size()], a);
 }
 
 function accentSequence() {
-	return new ColorSequence([
-		new ColorSequenceKeypoint(0, Color3.fromRGB(122, 162, 247)),
-		new ColorSequenceKeypoint(0.26, Color3.fromRGB(125, 207, 255)),
-		new ColorSequenceKeypoint(0.52, Color3.fromRGB(187, 154, 247)),
-		new ColorSequenceKeypoint(0.76, Color3.fromRGB(247, 118, 142)),
-		new ColorSequenceKeypoint(1, Color3.fromRGB(224, 175, 104)),
-	]);
+	const colors = currentTheme().accent;
+	const points = new Array<ColorSequenceKeypoint>();
+	for (let i = 0; i < colors.size(); i++) {
+		points.push(new ColorSequenceKeypoint(colors.size() === 1 ? 0 : i / (colors.size() - 1), colors[i]));
+	}
+	return new ColorSequence(points);
 }
 
 function accentLoopSequence() {
-	return new ColorSequence([
-		new ColorSequenceKeypoint(0, Color3.fromRGB(122, 162, 247)),
-		new ColorSequenceKeypoint(0.18, Color3.fromRGB(125, 207, 255)),
-		new ColorSequenceKeypoint(0.36, Color3.fromRGB(187, 154, 247)),
-		new ColorSequenceKeypoint(0.54, Color3.fromRGB(247, 118, 142)),
-		new ColorSequenceKeypoint(0.72, Color3.fromRGB(224, 175, 104)),
-		new ColorSequenceKeypoint(1, Color3.fromRGB(122, 162, 247)),
-	]);
+	const colors = currentTheme().accent;
+	const points = new Array<ColorSequenceKeypoint>();
+	for (let i = 0; i <= colors.size(); i++) {
+		points.push(new ColorSequenceKeypoint(i / colors.size(), colors[i % colors.size()]));
+	}
+	return new ColorSequence(points);
 }
 
 function accentGradient(parent: Instance, rot = 0) {
@@ -385,6 +454,14 @@ function savedPlatformMode(saved: Partial<Config>) {
 	return (v === "pc" || v === "mobile" || v === "auto") ? v as PlatformMode : "auto" as PlatformMode;
 }
 
+function savedTheme(saved: Partial<Config>) {
+	const v = savedString(saved, "theme", "Tokyo Night");
+	for (const theme of themeNames) {
+		if (v === theme) return theme;
+	}
+	return "Tokyo Night" as ThemeName;
+}
+
 function applySavedConfig(saved: Partial<Config>) {
 	config.intro = savedBool(saved, "intro", config.intro !== false);
 	config.method = savedMethod(saved);
@@ -404,6 +481,7 @@ function applySavedConfig(saved: Partial<Config>) {
 	config.hideRealCharacter = savedBool(saved, "hideRealCharacter", config.hideRealCharacter !== false);
 	config.clearInputOnMenu = savedBool(saved, "clearInputOnMenu", config.clearInputOnMenu !== false);
 	config.lowMotion = savedBool(saved, "lowMotion", config.lowMotion === true);
+	config.theme = savedTheme(saved);
 	config.targetPriority = savedTargetPriority(saved);
 	config.platformMode = savedPlatformMode(saved);
 	config.mobileFlingTool = savedBool(saved, "mobileFlingTool", config.mobileFlingTool !== false);
@@ -442,6 +520,7 @@ function configSnapshot() {
 		hideRealCharacter: config.hideRealCharacter,
 		clearInputOnMenu: config.clearInputOnMenu,
 		lowMotion: config.lowMotion,
+		theme: config.theme,
 		targetPriority: config.targetPriority,
 		platformMode: config.platformMode,
 		mobileFlingTool: config.mobileFlingTool,
@@ -528,6 +607,30 @@ function applyConfigSideEffects(key: keyof Config) {
 		method = config.method === "skidfling" ? "skidfling" : "NaN";
 	}
 	if (key === "manualFlingDuration") config.manualFlingDuration = math.clamp(configNumber("manualFlingDuration", 2), 0.25, 8);
+	if (key === "theme") {
+		config.theme = currentThemeName();
+		updateWatermark();
+		const restorePosition = settingsRoot?.Position;
+		const restoreSize = settingsRoot?.Size;
+		const restoreVisible = settingsRoot?.Visible ?? true;
+		task.defer(() => {
+			if (settingsGui?.Parent) {
+				destroySettingsMenu();
+				showSettingsMenu();
+				if (settingsRoot) {
+					if (restorePosition) settingsRoot.Position = restorePosition;
+					if (restoreSize) settingsRoot.Size = restoreSize;
+					settingsRoot.Visible = restoreVisible;
+				}
+				if (settingsGlow && settingsRoot) {
+					settingsGlow.AnchorPoint = settingsRoot.AnchorPoint;
+					settingsGlow.Position = settingsRoot.Position;
+					settingsGlow.Size = UDim2.fromOffset(settingsRoot.AbsoluteSize.X + 26, settingsRoot.AbsoluteSize.Y + 26);
+					settingsGlow.Visible = restoreVisible;
+				}
+			}
+		});
+	}
 	if (key === "showGuide" && config.showGuide !== true) clearGuide();
 	if (key === "showHRPs" && config.showHRPs !== true) clearHrpOutlines();
 	if (key === "showWatermark") updateWatermark();
@@ -731,9 +834,9 @@ function updateWatermark() {
 	label.TextSize = 15;
 	label.TextXAlignment = Enum.TextXAlignment.Right;
 	label.TextYAlignment = Enum.TextYAlignment.Center;
-	label.TextColor3 = Color3.fromRGB(245, 245, 250);
+	label.TextColor3 = currentTheme().text;
 	label.TextTransparency = 0;
-	label.TextStrokeColor3 = Color3.fromRGB(255, 46, 89);
+	label.TextStrokeColor3 = accentColor(0.72);
 	label.TextStrokeTransparency = 0.35;
 	label.ZIndex = 52;
 	label.Parent = screenGui;
@@ -741,9 +844,9 @@ function updateWatermark() {
 
 	const labelGrad = new Instance("UIGradient");
 	labelGrad.Color = new ColorSequence([
-		new ColorSequenceKeypoint(0, Color3.fromRGB(255, 46, 89)),
-		new ColorSequenceKeypoint(0.5, Color3.fromRGB(245, 245, 250)),
-		new ColorSequenceKeypoint(1, Color3.fromRGB(125, 207, 255)),
+		new ColorSequenceKeypoint(0, accentColor(0.72)),
+		new ColorSequenceKeypoint(0.5, currentTheme().text),
+		new ColorSequenceKeypoint(1, accentColor(0.2)),
 	]);
 	labelGrad.Parent = label;
 
@@ -806,7 +909,7 @@ function makeIntroText(parent: Instance, s: string, size: number, y: number, hig
 	label.Font = high ? Enum.Font.Arcade : Enum.Font.Code;
 	label.Text = s;
 	label.TextSize = size;
-	label.TextColor3 = new Color3(1, 1, 1);
+	label.TextColor3 = currentTheme().text;
 	label.TextStrokeTransparency = high ? 0.25 : 0.55;
 	label.TextXAlignment = Enum.TextXAlignment.Center;
 	label.TextYAlignment = Enum.TextYAlignment.Center;
@@ -851,6 +954,7 @@ function showSettingsMenu(from?: GuiObject) {
 		return;
 	}
 	if (settingsGui?.Parent) destroySettingsMenu();
+	const theme = currentTheme();
 
 	const screenGui = new Instance("ScreenGui");
 	screenGui.Name = "nbf9000Settings";
@@ -873,7 +977,7 @@ function showSettingsMenu(from?: GuiObject) {
 	root.AnchorPoint = new Vector2(0.5, 0.5);
 	root.Position = startPosition;
 	root.Size = startSize;
-	root.BackgroundColor3 = Color3.fromRGB(22, 22, 33);
+	root.BackgroundColor3 = theme.bg;
 	root.BackgroundTransparency = 0.03;
 	root.BorderSizePixel = 0;
 	root.ClipsDescendants = true;
@@ -907,7 +1011,7 @@ function showSettingsMenu(from?: GuiObject) {
 	glow.AnchorPoint = root.AnchorPoint;
 	glow.Position = root.Position;
 	glow.Size = UDim2.fromOffset((fromSize?.X ?? 440) + 26, (fromSize?.Y ?? 382) + 26);
-	glow.BackgroundColor3 = Color3.fromRGB(122, 162, 247);
+	glow.BackgroundColor3 = accentColor(0);
 	glow.BackgroundTransparency = 1;
 	glow.BorderSizePixel = 0;
 	glow.ZIndex = 1;
@@ -928,7 +1032,7 @@ function showSettingsMenu(from?: GuiObject) {
 
 	const top = new Instance("Frame");
 	top.Size = new UDim2(1, 0, 0, 36);
-	top.BackgroundColor3 = Color3.fromRGB(15, 15, 24);
+	top.BackgroundColor3 = theme.top;
 	top.BorderSizePixel = 0;
 	top.ZIndex = 4;
 	top.Parent = root;
@@ -951,7 +1055,7 @@ function showSettingsMenu(from?: GuiObject) {
 	title.BackgroundTransparency = 1;
 	title.Font = Enum.Font.Code;
 	title.Text = "NBF9000 // settings";
-	title.TextColor3 = new Color3(1, 1, 1);
+	title.TextColor3 = theme.text;
 	title.TextSize = 18;
 	title.TextXAlignment = Enum.TextXAlignment.Left;
 	title.TextYAlignment = Enum.TextYAlignment.Center;
@@ -975,7 +1079,7 @@ function showSettingsMenu(from?: GuiObject) {
 	miniBar.AnchorPoint = new Vector2(0.5, 0.5);
 	miniBar.Position = UDim2.fromScale(0.5, 0.5);
 	miniBar.Size = UDim2.fromOffset(16, 2);
-	miniBar.BackgroundColor3 = Color3.fromRGB(235, 235, 245);
+	miniBar.BackgroundColor3 = theme.text;
 	miniBar.BorderSizePixel = 0;
 	miniBar.ZIndex = 8;
 	miniBar.Parent = mini;
@@ -1048,7 +1152,7 @@ function showSettingsMenu(from?: GuiObject) {
 	page.CanvasSize = new UDim2();
 	page.AutomaticCanvasSize = Enum.AutomaticSize.Y;
 	page.ScrollBarThickness = 3;
-	page.ScrollBarImageColor3 = Color3.fromRGB(160, 180, 255);
+	page.ScrollBarImageColor3 = theme.scroll;
 	page.ScrollBarImageTransparency = 0.18;
 	page.ScrollingDirection = Enum.ScrollingDirection.Y;
 	page.ZIndex = 5;
@@ -1078,7 +1182,7 @@ function showSettingsMenu(from?: GuiObject) {
 		stroke.Transparency = 0.2;
 		stroke.Parent = obj;
 		accentGradient(stroke);
-		obj.BackgroundColor3 = depth ? Color3.fromRGB(17, 17, 27) : Color3.fromRGB(8, 9, 15);
+		obj.BackgroundColor3 = depth ? theme.depth : theme.surface;
 		return stroke;
 	}
 
@@ -1095,7 +1199,7 @@ function showSettingsMenu(from?: GuiObject) {
 		label.BackgroundTransparency = 1;
 		label.Font = Enum.Font.Code;
 		label.Text = text.upper();
-		label.TextColor3 = Color3.fromRGB(174, 176, 190);
+		label.TextColor3 = theme.muted;
 		label.TextSize = 13;
 		label.TextXAlignment = Enum.TextXAlignment.Left;
 		label.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1136,7 +1240,7 @@ function showSettingsMenu(from?: GuiObject) {
 		caption.BackgroundTransparency = 1;
 		caption.Font = Enum.Font.Code;
 		caption.Text = text;
-		caption.TextColor3 = Color3.fromRGB(235, 235, 245);
+		caption.TextColor3 = theme.text;
 		caption.TextSize = 15;
 		caption.TextXAlignment = Enum.TextXAlignment.Left;
 		caption.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1171,7 +1275,7 @@ function showSettingsMenu(from?: GuiObject) {
 		knob.AnchorPoint = new Vector2(0.5, 0.5);
 		knob.Position = new UDim2(0, 12, 0.5, 0);
 		knob.Size = UDim2.fromOffset(14, 14);
-		knob.BackgroundColor3 = Color3.fromRGB(235, 235, 245);
+		knob.BackgroundColor3 = theme.text;
 		knob.BackgroundTransparency = 0.1;
 		knob.BorderSizePixel = 0;
 		knob.ZIndex = 8;
@@ -1208,7 +1312,7 @@ function showSettingsMenu(from?: GuiObject) {
 		caption.BackgroundTransparency = 1;
 		caption.Font = Enum.Font.Code;
 		caption.Text = text;
-		caption.TextColor3 = Color3.fromRGB(235, 235, 245);
+		caption.TextColor3 = theme.text;
 		caption.TextSize = 14;
 		caption.TextXAlignment = Enum.TextXAlignment.Left;
 		caption.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1222,7 +1326,7 @@ function showSettingsMenu(from?: GuiObject) {
 		val.BackgroundTransparency = 1;
 		val.Font = Enum.Font.Code;
 		val.Text = value;
-		val.TextColor3 = Color3.fromRGB(174, 176, 190);
+		val.TextColor3 = theme.muted;
 		val.TextSize = 13;
 		val.TextXAlignment = Enum.TextXAlignment.Center;
 		val.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1242,7 +1346,7 @@ function showSettingsMenu(from?: GuiObject) {
 		caption.BackgroundTransparency = 1;
 		caption.Font = Enum.Font.Code;
 		caption.Text = text;
-		caption.TextColor3 = Color3.fromRGB(235, 235, 245);
+		caption.TextColor3 = theme.text;
 		caption.TextSize = 15;
 		caption.TextXAlignment = Enum.TextXAlignment.Left;
 		caption.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1265,8 +1369,8 @@ function showSettingsMenu(from?: GuiObject) {
 		valueBox.BackgroundTransparency = 1;
 		valueBox.ClearTextOnFocus = false;
 		valueBox.Font = Enum.Font.Code;
-		valueBox.TextColor3 = Color3.fromRGB(235, 235, 245);
-		valueBox.PlaceholderColor3 = Color3.fromRGB(110, 112, 130);
+		valueBox.TextColor3 = theme.text;
+		valueBox.PlaceholderColor3 = theme.soft;
 		valueBox.TextSize = 13;
 		valueBox.TextXAlignment = Enum.TextXAlignment.Center;
 		valueBox.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1287,7 +1391,7 @@ function showSettingsMenu(from?: GuiObject) {
 		rail.AnchorPoint = new Vector2(0.5, 0.5);
 		rail.Position = new UDim2(0.5, 0, 0.5, 0);
 		rail.Size = new UDim2(1, -38, 0, 5);
-		rail.BackgroundColor3 = Color3.fromRGB(8, 9, 15);
+		rail.BackgroundColor3 = theme.surface;
 		rail.BackgroundTransparency = 0;
 		rail.BorderSizePixel = 0;
 		rail.ZIndex = 7;
@@ -1310,7 +1414,7 @@ function showSettingsMenu(from?: GuiObject) {
 		knob.AnchorPoint = new Vector2(0.5, 0.5);
 		knob.Position = new UDim2(0, 0, 0.5, 0);
 		knob.Size = UDim2.fromOffset(18, 18);
-		knob.BackgroundColor3 = Color3.fromRGB(235, 235, 245);
+		knob.BackgroundColor3 = theme.text;
 		knob.BackgroundTransparency = 0;
 		knob.BorderSizePixel = 0;
 		knob.ZIndex = 9;
@@ -1334,7 +1438,7 @@ function showSettingsMenu(from?: GuiObject) {
 				tick.AnchorPoint = new Vector2(0.5, 0);
 				tick.Position = new UDim2((i - min) / range, 0, 1, 2);
 				tick.Size = UDim2.fromOffset(1, 4);
-				tick.BackgroundColor3 = Color3.fromRGB(235, 235, 245);
+				tick.BackgroundColor3 = theme.text;
 				tick.BackgroundTransparency = 0.55;
 				tick.BorderSizePixel = 0;
 				tick.ZIndex = 8;
@@ -1433,7 +1537,7 @@ function showSettingsMenu(from?: GuiObject) {
 		creditsOverlay = overlay;
 		overlay.Position = UDim2.fromOffset(12, 44);
 		overlay.Size = new UDim2(1, -24, 1, -58);
-		overlay.BackgroundColor3 = Color3.fromRGB(7, 8, 14);
+		overlay.BackgroundColor3 = theme.surface;
 		overlay.BackgroundTransparency = 1;
 		overlay.BorderSizePixel = 0;
 		overlay.ZIndex = 30;
@@ -1446,7 +1550,7 @@ function showSettingsMenu(from?: GuiObject) {
 		title.BackgroundTransparency = 1;
 		title.Font = Enum.Font.Code;
 		title.Text = "credits";
-		title.TextColor3 = Color3.fromRGB(245, 245, 250);
+		title.TextColor3 = theme.text;
 		title.TextSize = 18;
 		title.TextXAlignment = Enum.TextXAlignment.Left;
 		title.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1458,11 +1562,11 @@ function showSettingsMenu(from?: GuiObject) {
 		close.AnchorPoint = new Vector2(1, 0);
 		close.Position = new UDim2(1, -10, 0, 8);
 		close.Size = UDim2.fromOffset(34, 26);
-		close.BackgroundColor3 = Color3.fromRGB(8, 9, 15);
+		close.BackgroundColor3 = theme.surface;
 		close.BorderSizePixel = 0;
 		close.Font = Enum.Font.Code;
 		close.Text = "<";
-		close.TextColor3 = Color3.fromRGB(235, 235, 245);
+		close.TextColor3 = theme.text;
 		close.TextSize = 16;
 		close.AutoButtonColor = false;
 		close.ZIndex = 33;
@@ -1472,6 +1576,7 @@ function showSettingsMenu(from?: GuiObject) {
 		const lines = [
 			["kobold (@koboldpaws on discord)", "NBF9000 direction, testing, and script concept"],
 			["wlwaw / zzz (@wlwaw on discord)", "mobile script testing"],
+			["STEVE-916-create / Uhhhhhh", "theme references and broad UI inspiration"],
 			["AnthonyIsntHere", "original SkidFling method/reference"],
 		];
 		for (let i = 0; i < lines.size(); i++) {
@@ -1481,7 +1586,7 @@ function showSettingsMenu(from?: GuiObject) {
 			name.BackgroundTransparency = 1;
 			name.Font = Enum.Font.Code;
 			name.Text = lines[i][0];
-			name.TextColor3 = Color3.fromRGB(235, 235, 245);
+			name.TextColor3 = theme.text;
 			name.TextSize = 15;
 			name.TextXAlignment = Enum.TextXAlignment.Left;
 			name.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1494,7 +1599,7 @@ function showSettingsMenu(from?: GuiObject) {
 			detail.BackgroundTransparency = 1;
 			detail.Font = Enum.Font.Code;
 			detail.Text = lines[i][1];
-			detail.TextColor3 = Color3.fromRGB(174, 176, 190);
+			detail.TextColor3 = theme.muted;
 			detail.TextSize = 12;
 			detail.TextXAlignment = Enum.TextXAlignment.Left;
 			detail.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1518,7 +1623,7 @@ function showSettingsMenu(from?: GuiObject) {
 		button.BorderSizePixel = 0;
 		button.Font = Enum.Font.Code;
 		button.Text = text;
-		button.TextColor3 = Color3.fromRGB(235, 235, 245);
+		button.TextColor3 = theme.text;
 		button.TextSize = 14;
 		button.AutoButtonColor = false;
 		button.ZIndex = 7;
@@ -1562,7 +1667,7 @@ function showSettingsMenu(from?: GuiObject) {
 		caption.BackgroundTransparency = 1;
 		caption.Font = Enum.Font.Code;
 		caption.Text = text;
-		caption.TextColor3 = Color3.fromRGB(235, 235, 245);
+		caption.TextColor3 = theme.text;
 		caption.TextSize = 15;
 		caption.TextXAlignment = Enum.TextXAlignment.Left;
 		caption.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1585,7 +1690,7 @@ function showSettingsMenu(from?: GuiObject) {
 		button.BackgroundTransparency = 1;
 		button.BorderSizePixel = 0;
 		button.Font = Enum.Font.Code;
-		button.TextColor3 = Color3.fromRGB(235, 235, 245);
+		button.TextColor3 = theme.text;
 		button.TextSize = 13;
 		button.Text = configString(key, fallback);
 		button.TextXAlignment = Enum.TextXAlignment.Center;
@@ -1600,7 +1705,7 @@ function showSettingsMenu(from?: GuiObject) {
 		arrow.BackgroundTransparency = 1;
 		arrow.Font = Enum.Font.Code;
 		arrow.Text = "v";
-		arrow.TextColor3 = Color3.fromRGB(174, 176, 190);
+		arrow.TextColor3 = theme.muted;
 		arrow.TextSize = 12;
 		arrow.TextXAlignment = Enum.TextXAlignment.Center;
 		arrow.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1642,12 +1747,12 @@ function showSettingsMenu(from?: GuiObject) {
 			const value = values[i];
 			const option = new Instance("TextButton");
 			option.Size = new UDim2(1, 0, 0, optionHeight);
-			option.BackgroundColor3 = Color3.fromRGB(24, 25, 38);
+			option.BackgroundColor3 = theme.depth;
 			option.BackgroundTransparency = 1;
 			option.BorderSizePixel = 0;
 			option.Font = Enum.Font.Code;
 			option.Text = value;
-			option.TextColor3 = Color3.fromRGB(235, 235, 245);
+			option.TextColor3 = theme.text;
 			option.TextSize = 13;
 			option.TextXAlignment = Enum.TextXAlignment.Center;
 			option.Visible = false;
@@ -1731,7 +1836,7 @@ function showSettingsMenu(from?: GuiObject) {
 		caption.BackgroundTransparency = 1;
 		caption.Font = Enum.Font.Code;
 		caption.Text = text;
-		caption.TextColor3 = Color3.fromRGB(235, 235, 245);
+		caption.TextColor3 = theme.text;
 		caption.TextSize = 15;
 		caption.TextXAlignment = Enum.TextXAlignment.Left;
 		caption.TextYAlignment = Enum.TextYAlignment.Center;
@@ -1746,7 +1851,7 @@ function showSettingsMenu(from?: GuiObject) {
 		button.BackgroundTransparency = 0;
 		button.BorderSizePixel = 0;
 		button.Font = Enum.Font.Code;
-		button.TextColor3 = Color3.fromRGB(235, 235, 245);
+		button.TextColor3 = theme.text;
 		button.TextSize = 13;
 		button.Text = configString(key, fallback);
 		button.TextXAlignment = Enum.TextXAlignment.Center;
@@ -1801,9 +1906,9 @@ function showSettingsMenu(from?: GuiObject) {
 
 	section("targeting");
 	makeDropdown("Target priority", "targetPriority", ["mouse", "closest", "camera"], "mouse");
-	makeToggle("Click players through walls", "clickThroughWalls", false);
+	makeToggle("Click through walls", "clickThroughWalls", false);
 	makeToggle("Use closest body part", "preferClosestPart", true);
-	makeToggle("Only target alive players", "requireAliveTarget", true);
+	makeToggle("Require alive players", "requireAliveTarget", true);
 	makeToggle("Ignore teammates", "teamCheck", false);
 
 	section("fling");
@@ -1816,16 +1921,17 @@ function showSettingsMenu(from?: GuiObject) {
 	setManualFlingDurationVisible(config.autoDetectFling !== true, false);
 	makeToggle("Keep flinging same target", "repeatSameTarget", false);
 	makeToggle("Retry if target escapes", "autoRefling", true);
-	makeToggle("Anti fling collisions", "antiFling", false);
+	makeToggle("Anti fling", "antiFling", false);
 
 	section("handoff");
-	makeToggle("Hide real avatar during handoff", "hideRealCharacter", true);
+	makeToggle("Hide avatar", "hideRealCharacter", true);
 	makeToggle("Clear movement on menu", "clearInputOnMenu", true);
 
 	section("visuals");
+	makeDropdown("Theme", "theme", themeNames as Array<string>, "Tokyo Night");
 	makeToggle("Intro animation", "intro", true);
 	makeToggle("HRP outlines", "showHRPs", false);
-	makeToggle("Click guide indicator", "showGuide", true);
+	makeToggle("Local HRP outline", "showGuide", true);
 	makeToggle("Watermark", "showWatermark", true);
 	makeToggle("Reduced motion", "lowMotion", false);
 
@@ -1833,7 +1939,7 @@ function showSettingsMenu(from?: GuiObject) {
 	makeInfo("Detected input", detectedPlatform());
 	makeDropdown("Input platform mode", "platformMode", ["auto", "pc", "mobile"], "auto");
 	makeToggle("Mobile fling tool", "mobileFlingTool", true);
-	makeToggle("Mobile fling-all tool", "mobileFlingAllTool", true);
+	makeToggle("Mobile fling all tool", "mobileFlingAllTool", true);
 	makeToggle("Mobile cancel tool", "mobileCancelTool", true);
 
 	section("credits");
@@ -1842,7 +1948,7 @@ function showSettingsMenu(from?: GuiObject) {
 	section("keybinds");
 	makeKeybind("Menu toggle keybind", "menuKey", "RightShift");
 	makeKeybind("Click fling keybind", "flingKey", "Ctrl+MouseButton1");
-	makeKeybind("Fling-all keybind", "flingAllKey", "Ctrl+F");
+	makeKeybind("Fling all keybind", "flingAllKey", "Ctrl+F");
 	makeKeybind("Clear queue keybind", "clearQueueKey", "Backspace");
 	makeKeybind("Cancel fling keybind", "cancelFlingKey", "Q");
 
@@ -1968,6 +2074,7 @@ function toggleSettingsMenu() {
 
 function playIntro() {
 	killIntro();
+	const theme = currentTheme();
 
 	const screenGui = new Instance("ScreenGui");
 	screenGui.Name = "nbf9000Intro";
@@ -2003,7 +2110,7 @@ function playIntro() {
 
 	const shade = new Instance("Frame");
 	shade.Size = UDim2.fromScale(1, 1);
-	shade.BackgroundColor3 = Color3.fromRGB(4, 6, 14);
+	shade.BackgroundColor3 = theme.surface;
 	shade.BackgroundTransparency = 1;
 	shade.BorderSizePixel = 0;
 	shade.ZIndex = 1;
@@ -2029,7 +2136,7 @@ function playIntro() {
 		borderFrames.push(frame);
 
 		const grad = new Instance("UIGradient");
-	grad.Color = accentSequence();
+		grad.Color = accentSequence();
 		grad.Rotation = spec.rot;
 		grad.Parent = frame;
 		borderGrads.push(grad);
@@ -2039,7 +2146,7 @@ function playIntro() {
 	card.AnchorPoint = new Vector2(0.5, 0.5);
 	card.Position = UDim2.fromScale(0.5, 0.5);
 	card.Size = new UDim2(0.82, 0, 0, 136);
-	card.BackgroundColor3 = Color3.fromRGB(22, 22, 33);
+	card.BackgroundColor3 = theme.bg;
 	card.BackgroundTransparency = 1;
 	card.BorderSizePixel = 0;
 	card.ClipsDescendants = true;
@@ -2072,7 +2179,7 @@ function playIntro() {
 	const top = new Instance("Frame");
 	top.Position = new UDim2(0, 0, 0, 0);
 	top.Size = new UDim2(1, 0, 0, 18);
-	top.BackgroundColor3 = Color3.fromRGB(15, 15, 24);
+	top.BackgroundColor3 = theme.top;
 	top.BackgroundTransparency = 1;
 	top.BorderSizePixel = 0;
 	top.ZIndex = 4;
@@ -2193,7 +2300,7 @@ function playIntro() {
 		const textOffset = new Vector2(math.sin(t * 4) * 0.28, 0);
 		titleGrad.Offset = textOffset;
 		subGrad.Offset = textOffset;
-		boot.TextColor3 = Color3.fromRGB(170, 170, 176);
+		boot.TextColor3 = theme.muted;
 		if (t - lastBar > 0.055) {
 			lastBar = t;
 			for (let i = 0; i < bars.size(); i++) {
@@ -3575,6 +3682,7 @@ track(localPlayer.CharacterAdded.Connect((char) => {
 track(players.PlayerAdded.Connect(() => updateWatermark()));
 track(players.PlayerRemoving.Connect(() => task.defer(updateWatermark)));
 if (config.intro !== false) playIntro();
+else task.defer(() => showSettingsMenu());
 updateWatermark();
 updateMobileTools();
 
