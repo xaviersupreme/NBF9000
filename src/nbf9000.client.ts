@@ -1,13 +1,14 @@
 declare function getgenv(): { nbf9000?: Runtime; config?: Config };
 declare function gethui(): Instance;
 declare function sethiddenproperty(obj: Instance, prop: string, val: unknown): void;
+declare function gethiddenproperty(obj: Instance, prop: string): unknown;
 declare function getcustomasset(path: string): string;
 declare function isfile(path: string): boolean;
 declare function readfile(path: string): string;
 declare function writefile(path: string, data: string): void;
 declare function makefolder(path: string): void;
 
-type Method = "NaN" | "skidfling";
+type Method = "Overflow" | "skidfling";
 type Tgt = Instance | CFrame | Vector3;
 type PlatformMode = "auto" | "pc" | "mobile";
 type TargetPriority = "mouse" | "closest" | "camera";
@@ -18,6 +19,9 @@ interface Runtime {
 	fling?: (tgt: Tgt, dur?: number) => boolean | undefined;
 	clear?: () => void;
 	doFling?: (rp: BasePart, hum: Humanoid, tgt: Tgt, cf: CFrame) => void;
+	simulationRadius?: number;
+	maximumSimulationRadius?: number;
+	simRadiusActive?: boolean;
 	oldDestroyHeight?: number;
 	sessionModel?: Model;
 	util?: {
@@ -43,6 +47,7 @@ interface Config {
 	preferClosestPart?: boolean;
 	requireAliveTarget?: boolean;
 	teamCheck?: boolean;
+	whitelist?: string;
 	hideRealCharacter?: boolean;
 	clearInputOnMenu?: boolean;
 	lowMotion?: boolean;
@@ -95,7 +100,7 @@ let configSaveQueued = false;
 const hadEnvConfig = env.config !== undefined;
 const config = env.config ?? (env.config = {
 	intro: true,
-	method: "NaN" as Method,
+	method: "Overflow" as Method,
 	showHRPs: false,
 	clickThroughWalls: false,
 	showGuide: true,
@@ -109,6 +114,7 @@ const config = env.config ?? (env.config = {
 	preferClosestPart: true,
 	requireAliveTarget: true,
 	teamCheck: false,
+	whitelist: "",
 	hideRealCharacter: true,
 	clearInputOnMenu: true,
 	lowMotion: false,
@@ -126,8 +132,9 @@ const config = env.config ?? (env.config = {
 });
 
 if (config.intro === undefined) config.intro = true;
-if (config.method === undefined) config.method = "NaN";
-if ((config.method as unknown) !== "NaN" && (config.method as unknown) !== "skidfling") config.method = "NaN";
+if ((config.method as unknown) === "NaN") config.method = "Overflow";
+if (config.method === undefined) config.method = "Overflow";
+if ((config.method as unknown) !== "Overflow" && (config.method as unknown) !== "skidfling") config.method = "Overflow";
 if (config.showHRPs === undefined) config.showHRPs = false;
 if (config.clickThroughWalls === undefined) config.clickThroughWalls = false;
 if (config.showGuide === undefined) config.showGuide = true;
@@ -141,6 +148,7 @@ if (config.repeatSameTarget === undefined) config.repeatSameTarget = false;
 if (config.preferClosestPart === undefined) config.preferClosestPart = true;
 if (config.requireAliveTarget === undefined) config.requireAliveTarget = true;
 if (config.teamCheck === undefined) config.teamCheck = false;
+if (config.whitelist === undefined) config.whitelist = "";
 if (config.hideRealCharacter === undefined) config.hideRealCharacter = true;
 if (config.clearInputOnMenu === undefined) config.clearInputOnMenu = true;
 if (config.lowMotion === undefined) config.lowMotion = false;
@@ -156,7 +164,7 @@ if (config.flingAllKey === undefined) config.flingAllKey = "Ctrl+F";
 if (config.clearQueueKey === undefined) config.clearQueueKey = "Backspace";
 if (config.cancelFlingKey === undefined) config.cancelFlingKey = "Q";
 
-let method: Method = config.method === "skidfling" ? "skidfling" : "NaN";
+let method: Method = config.method === "skidfling" ? "skidfling" : "Overflow";
 
 
 const anims = {
@@ -220,6 +228,7 @@ const savedPartState = new Map<BasePart, SavedPartState>();
 const savedScriptDisabled = new Map<BaseScript, boolean>();
 const targetCollision = new Map<BasePart, boolean>();
 const antiFlingCollision = new Map<BasePart, boolean>();
+const antiFlingNoCollision = new Map<BasePart, Array<NoCollisionConstraint>>();
 
 let sessionModel: Model | undefined;
 let sessionRootAnchored = false;
@@ -380,7 +389,8 @@ function accentGradient(parent: Instance, rot = 0) {
 
 function charParts(char?: Model): LuaTuple<[Humanoid | undefined, BasePart | undefined]> {
 	const hum = char?.FindFirstChildOfClass("Humanoid");
-	const rp = hum?.RootPart ?? char?.FindFirstChild("HumanoidRootPart");
+	const namedRoot = char?.FindFirstChild("HumanoidRootPart");
+	const rp = namedRoot?.IsA("BasePart") ? namedRoot : hum?.RootPart;
 	return $tuple(hum, rp?.IsA("BasePart") ? rp : undefined);
 }
 
@@ -403,6 +413,7 @@ function releaseGuide() {
 	if (!p) return;
 	guidePart = undefined;
 	guideOutline = undefined;
+	guideOutlineAlt = undefined;
 	guideTick = os.clock();
 	p.Anchored = false;
 	p.Massless = false;
@@ -414,6 +425,13 @@ function releaseGuide() {
 	p.Velocity = p.AssemblyLinearVelocity;
 	p.RotVelocity = p.AssemblyAngularVelocity;
 	debrisService.AddItem(p, 2.5);
+}
+
+function pivotRootTo(char: Model | undefined, root: BasePart | undefined, wanted: CFrame) {
+	if (!char || !root) return;
+	const offset = root.CFrame.ToObjectSpace(char.GetPivot());
+	char.PivotTo(wanted.mul(offset) as CFrame);
+	root.CFrame = wanted;
 }
 
 function loadSavedConfig() {
@@ -442,7 +460,7 @@ function savedNumber(saved: Partial<Config>, key: keyof Config, fallback: number
 }
 
 function savedMethod(saved: Partial<Config>) {
-	return savedString(saved, "method", "NaN") === "skidfling" ? "skidfling" as Method : "NaN" as Method;
+	return savedString(saved, "method", "Overflow") === "skidfling" ? "skidfling" as Method : "Overflow" as Method;
 }
 
 function savedTargetPriority(saved: Partial<Config>) {
@@ -479,6 +497,7 @@ function applySavedConfig(saved: Partial<Config>) {
 	config.preferClosestPart = savedBool(saved, "preferClosestPart", config.preferClosestPart !== false);
 	config.requireAliveTarget = savedBool(saved, "requireAliveTarget", config.requireAliveTarget !== false);
 	config.teamCheck = savedBool(saved, "teamCheck", config.teamCheck === true);
+	config.whitelist = savedString(saved, "whitelist", config.whitelist ?? "");
 	config.hideRealCharacter = savedBool(saved, "hideRealCharacter", config.hideRealCharacter !== false);
 	config.clearInputOnMenu = savedBool(saved, "clearInputOnMenu", config.clearInputOnMenu !== false);
 	config.lowMotion = savedBool(saved, "lowMotion", config.lowMotion === true);
@@ -493,12 +512,13 @@ function applySavedConfig(saved: Partial<Config>) {
 	config.flingAllKey = savedString(saved, "flingAllKey", config.flingAllKey ?? "Ctrl+F");
 	config.clearQueueKey = savedString(saved, "clearQueueKey", config.clearQueueKey ?? "Backspace");
 	config.cancelFlingKey = savedString(saved, "cancelFlingKey", config.cancelFlingKey ?? "Q");
-	if ((config.method as unknown) !== "NaN" && (config.method as unknown) !== "skidfling") config.method = "NaN";
+	if ((config.method as unknown) === "NaN") config.method = "Overflow";
+	if ((config.method as unknown) !== "Overflow" && (config.method as unknown) !== "skidfling") config.method = "Overflow";
 }
 
 if (!hadEnvConfig) {
 	applySavedConfig(loadSavedConfig());
-	method = config.method === "skidfling" ? "skidfling" : "NaN";
+	method = config.method === "skidfling" ? "skidfling" : "Overflow";
 }
 
 function configSnapshot() {
@@ -518,6 +538,7 @@ function configSnapshot() {
 		preferClosestPart: config.preferClosestPart,
 		requireAliveTarget: config.requireAliveTarget,
 		teamCheck: config.teamCheck,
+		whitelist: config.whitelist,
 		hideRealCharacter: config.hideRealCharacter,
 		clearInputOnMenu: config.clearInputOnMenu,
 		lowMotion: config.lowMotion,
@@ -590,6 +611,23 @@ function configString(key: keyof Config, fallback: string) {
 	return typeIs(v, "string") && v.size() > 0 ? v : fallback;
 }
 
+function cleanWhitelistToken(token: string) {
+	return token.gsub("^%s+", "")[0].gsub("%s+$", "")[0].lower();
+}
+
+function playerWhitelisted(player: Player) {
+	const raw = configString("whitelist", "");
+	if (raw.size() === 0) return false;
+	const name = player.Name.lower();
+	const display = player.DisplayName.lower();
+	const id = `${player.UserId}`;
+	for (const chunk of raw.gsub(";", ",")[0].gsub("\n", ",")[0].split(",")) {
+		const token = cleanWhitelistToken(chunk);
+		if (token === name || token === display || token === id) return true;
+	}
+	return false;
+}
+
 function configNumber(key: keyof Config, fallback: number) {
 	const v = config[key];
 	return typeIs(v, "number") ? v : fallback;
@@ -604,8 +642,9 @@ function setConfigValue(key: keyof Config, value: unknown) {
 
 function applyConfigSideEffects(key: keyof Config) {
 	if (key === "method") {
-		if ((config.method as unknown) !== "NaN" && (config.method as unknown) !== "skidfling") config.method = "NaN";
-		method = config.method === "skidfling" ? "skidfling" : "NaN";
+		if ((config.method as unknown) === "NaN") config.method = "Overflow";
+		if ((config.method as unknown) !== "Overflow" && (config.method as unknown) !== "skidfling") config.method = "Overflow";
+		method = config.method === "skidfling" ? "skidfling" : "Overflow";
 	}
 	if (key === "manualFlingDuration") config.manualFlingDuration = math.clamp(configNumber("manualFlingDuration", 2), 0.25, 8);
 	if (key === "theme") {
@@ -1350,6 +1389,54 @@ function showSettingsMenu(from?: GuiObject) {
 		val.Parent = item;
 	}
 
+	function makeTextInput(text: string, key: keyof Config, fallback: string, placeholder: string) {
+		const item = row(54);
+		item.ClipsDescendants = true;
+
+		const caption = new Instance("TextLabel");
+		caption.Position = UDim2.fromOffset(10, 2);
+		caption.Size = new UDim2(1, -20, 0, 20);
+		caption.BackgroundTransparency = 1;
+		caption.Font = Enum.Font.Code;
+		caption.Text = text;
+		caption.TextColor3 = theme.text;
+		caption.TextSize = 14;
+		caption.TextXAlignment = Enum.TextXAlignment.Left;
+		caption.TextYAlignment = Enum.TextYAlignment.Center;
+		caption.ZIndex = 6;
+		caption.Parent = item;
+
+		const box = new Instance("TextBox");
+		box.Position = UDim2.fromOffset(8, 24);
+		box.Size = new UDim2(1, -16, 0, 24);
+		box.BackgroundTransparency = 0;
+		box.BorderSizePixel = 0;
+		box.ClearTextOnFocus = false;
+		box.Font = Enum.Font.Code;
+		box.PlaceholderText = placeholder;
+		box.PlaceholderColor3 = theme.soft;
+		box.Text = configString(key, fallback);
+		box.TextColor3 = theme.text;
+		box.TextSize = 13;
+		box.TextTruncate = Enum.TextTruncate.AtEnd;
+		box.TextXAlignment = Enum.TextXAlignment.Left;
+		box.TextYAlignment = Enum.TextYAlignment.Center;
+		box.ZIndex = 7;
+		box.Parent = item;
+		stylizeBox(box);
+
+		const pad = new Instance("UIPadding");
+		pad.PaddingLeft = new UDim(0, 8);
+		pad.PaddingRight = new UDim(0, 8);
+		pad.Parent = box;
+
+		settingsTrack(box.Focused.Connect(() => tweenService.Create(box, new TweenInfo(0.12), { BackgroundTransparency: 0.06 }).Play()));
+		settingsTrack(box.FocusLost.Connect(() => {
+			setConfigValue(key, box.Text);
+			tweenService.Create(box, new TweenInfo(0.14), { BackgroundTransparency: 0 }).Play();
+		}));
+	}
+
 	function makeSlider(text: string, key: keyof Config, fallback: number, min: number, max: number, step: number, unit = "") {
 		const height = 64;
 		const margin = 10;
@@ -1928,12 +2015,12 @@ function showSettingsMenu(from?: GuiObject) {
 	section("targeting");
 	makeDropdown("Target priority", "targetPriority", ["mouse", "closest", "camera"], "mouse");
 	makeToggle("Click through walls", "clickThroughWalls", false);
-	makeToggle("Use closest body part", "preferClosestPart", true);
 	makeToggle("Require alive players", "requireAliveTarget", true);
 	makeToggle("Ignore teammates", "teamCheck", false);
+	makeTextInput("Whitelist players", "whitelist", "", "names or userids, comma separated");
 
 	section("fling");
-	makeDropdown("Fling method", "method", ["NaN", "skidfling"], "NaN");
+	makeDropdown("Fling method", "method", ["Overflow", "skidfling"], "Overflow");
 	makeToggle("Predict target movement", "flingPrediction", true);
 	let setManualFlingDurationVisible: ((visible: boolean, animated?: boolean) => void) | undefined;
 	makeToggle("Auto stop after fling", "autoDetectFling", true, (on) => setManualFlingDurationVisible?.(!on, true));
@@ -2388,7 +2475,7 @@ function updateGuide() {
 	const [hum, rp] = charParts(localPlayer.Character);
 	if (isDead(hum)) { releaseGuide(); return; }
 	const [, sessionRoot] = charParts(sessionModel);
-	const root = busy ? rp : (sessionRoot ?? rp);
+	const root = queue[0] !== undefined || busy ? rp ?? sessionRoot : sessionRoot ?? rp;
 	if (!root) { clearGuide(); return; }
 
 	const t = os.clock();
@@ -2446,14 +2533,25 @@ function updateGuide() {
 		guidePart.CFrame = wanted;
 	}
 
-	if (guideOutline) guideOutline.Color3 = accentColor(os.clock() * 0.55);
+	const color = accentColor(os.clock() * 0.55);
+	if (guideOutline) guideOutline.Color3 = color;
 	if (guideOutlineAlt) guideOutlineAlt.Color3 = accentColor(os.clock() * 0.55 + 0.26);
 }
 
 function resetRoot() {
 	skidHoldCFrame = undefined;
 	skidTweenLastClock = os.clock();
+	if (runtime.simRadiusActive === true) {
+		pcall(() => sethiddenproperty(localPlayer, "SimulationRadius", runtime.simulationRadius ?? 1000));
+		pcall(() => sethiddenproperty(localPlayer, "MaximumSimulationRadius", runtime.maximumSimulationRadius ?? 1000));
+		runtime.simRadiusActive = false;
+		runtime.simulationRadius = undefined;
+		runtime.maximumSimulationRadius = undefined;
+	}
 	const [hum, rp] = charParts(localPlayer.Character);
+	for (const obj of localPlayer.Character?.GetDescendants() ?? []) {
+		if (obj.IsA("BasePart")) zeroPartVelocity(obj);
+	}
 	if (rp) {
 		pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", undefined));
 		rp.AssemblyLinearVelocity = Vector3.zero;
@@ -2539,6 +2637,12 @@ function restoreTargetCollision() {
 }
 
 function restoreAntiFlingCollision() {
+	for (const [, constraints] of antiFlingNoCollision) {
+		for (const constraint of constraints) {
+			if (constraint.Parent) constraint.Destroy();
+		}
+	}
+	antiFlingNoCollision.clear();
 	for (const [p, c] of antiFlingCollision) {
 		if (!p.Parent) {
 			antiFlingCollision.delete(p);
@@ -2562,23 +2666,67 @@ function noCollideTarget(tgt: Tgt) {
 }
 
 function updateAntiFling() {
-	if (config.antiFling !== true || (method === "skidfling" && queue[0] !== undefined)) {
+	if (config.antiFling !== true || queue[0] !== undefined) {
 		restoreAntiFlingCollision();
 		return;
 	}
+	const localChar = localPlayer.Character;
+	if (!localChar) return;
+	const localParts = new Array<BasePart>();
+	for (const obj of localChar.GetDescendants()) {
+		if (obj.IsA("BasePart")) localParts.push(obj);
+	}
+	const live = new Set<BasePart>();
 	for (const player of players.GetPlayers()) {
 		if (player === localPlayer) continue;
 		const char = player.Character;
 		if (!char) continue;
 		for (const obj of char.GetDescendants()) {
 			if (obj.IsA("BasePart")) {
+				live.add(obj);
 				if (!antiFlingCollision.has(obj)) antiFlingCollision.set(obj, obj.CanCollide);
 				if (obj.CanCollide !== false) obj.CanCollide = false;
+				let constraints = antiFlingNoCollision.get(obj);
+				let rebuild = !constraints || constraints.size() !== localParts.size();
+				if (constraints) {
+					for (const constraint of constraints) {
+						if (!constraint.Parent || !constraint.Part0?.Parent || !constraint.Part1?.Parent) {
+							rebuild = true;
+							break;
+						}
+					}
+				}
+				if (rebuild) {
+					if (constraints) {
+						for (const constraint of constraints) {
+							if (constraint.Parent) constraint.Destroy();
+						}
+					}
+					constraints = new Array<NoCollisionConstraint>();
+					antiFlingNoCollision.set(obj, constraints);
+					for (const localPart of localParts) {
+						const ncc = new Instance("NoCollisionConstraint");
+						ncc.Part0 = localPart;
+						ncc.Part1 = obj;
+						ncc.Parent = localChar;
+						constraints.push(ncc);
+					}
+				}
 			}
 		}
 	}
 	for (const [part] of antiFlingCollision) {
-		if (!part.Parent) antiFlingCollision.delete(part);
+		if (!part.Parent || !live.has(part)) {
+			const constraints = antiFlingNoCollision.get(part);
+			if (constraints) {
+				for (const constraint of constraints) {
+					if (constraint.Parent) constraint.Destroy();
+				}
+				antiFlingNoCollision.delete(part);
+			}
+			if (part.Parent && !targetCollision.has(part)) part.CanCollide = antiFlingCollision.get(part) ?? part.CanCollide;
+			antiFlingCollision.delete(part);
+		}
 	}
 }
 
@@ -3083,6 +3231,7 @@ function playerFromTarget(tgt: Tgt) {
 function repeatPart(item: QueueItem) {
 	const player = item.player;
 	if (!player || !player.Parent) return;
+	if (playerWhitelisted(player)) return;
 	const char = player.Character;
 	if (!char) return;
 	const [hum, root] = charParts(char);
@@ -3097,7 +3246,7 @@ function predict(tgt: Tgt, item?: QueueItem): LuaTuple<[CFrame, boolean]> {
 		const part = repeatPart(item);
 		if (!part) {
 			const [, sessionRoot] = charParts(sessionModel);
-			return $tuple(item.lastCFrame ?? sessionRoot?.CFrame ?? CFrame.identity, item.player !== undefined && !item.player.Parent);
+			return $tuple(item.lastCFrame ?? sessionRoot?.CFrame ?? CFrame.identity, item.player !== undefined && (!item.player.Parent || playerWhitelisted(item.player)));
 		}
 		tgt = part;
 	}
@@ -3106,8 +3255,8 @@ function predict(tgt: Tgt, item?: QueueItem): LuaTuple<[CFrame, boolean]> {
 		if (part) {
 			if (!part.IsDescendantOf(world)) return $tuple(item?.lastCFrame ?? CFrame.identity, item?.repeat === true ? false : true);
 
-			const lead = config.flingPrediction === true && method !== "skidfling" ? 0.045 : 0;
-			let cf = new CFrame(part.Position);
+			const lead = config.flingPrediction === true && method === "skidfling" ? 0.045 : 0;
+			let cf = part.CFrame;
 
 			const oldPos = item?.lastPosition;
 			if (oldPos && part.Position.sub(oldPos).Magnitude > 200) {
@@ -3172,6 +3321,7 @@ function getPart(tgt: Tgt) {
 
 function canTargetPlayer(player: Player) {
 	if (player === localPlayer) return false;
+	if (playerWhitelisted(player)) return false;
 	if (config.teamCheck === true && localPlayer.Team !== undefined && player.Team === localPlayer.Team) return false;
 	const [hum, root] = charParts(player.Character);
 	if (!root) return false;
@@ -3187,7 +3337,7 @@ function usableTargetPart(part?: BasePart) {
 	if (player && !canTargetPlayer(player)) return;
 	const [hum] = charParts(char);
 	if (config.requireAliveTarget !== false && isDead(hum)) return;
-	return config.preferClosestPart === false ? part : targetPart(char) ?? part;
+	return targetPart(char) ?? part;
 }
 
 function throughWallTarget(pos: Vector3, radius = 46) {
@@ -3241,24 +3391,28 @@ function doHighlight(tgt: Tgt) {
 
 function queueFlingTarget(tgt: Tgt, dur: number | undefined, repeatMode: boolean, batch: boolean, batchToken?: number) {
 	if (!tgt) return false;
-	for (const q of queue) { if (q.tgt === tgt) return false; }
-	if (tgt === sessionModel || tgt === localPlayer.Character) return false;
-	if (typeIs(tgt, "Instance")) {
-		if (localPlayer.Character && tgt.IsDescendantOf(localPlayer.Character)) return false;
-		if (sessionModel && tgt.IsDescendantOf(sessionModel)) return false;
+	const normalized = typeIs(tgt, "Instance") ? getPart(tgt) : undefined;
+	const target = normalized ?? tgt;
+	for (const q of queue) { if (q.tgt === target) return false; }
+	if (target === sessionModel || target === localPlayer.Character) return false;
+	if (typeIs(target, "Instance")) {
+		if (localPlayer.Character && target.IsDescendantOf(localPlayer.Character)) return false;
+		if (sessionModel && target.IsDescendantOf(sessionModel)) return false;
 	}
+	const targetPlayer = playerFromTarget(target);
+	if (targetPlayer && playerWhitelisted(targetPlayer)) return false;
 
-	if (typeIs(tgt, "Instance")) {
-		if (cooldowns.has(tgt)) return false;
-		cooldowns.add(tgt);
-		task.delay(1, () => cooldowns.delete(tgt));
+	if (typeIs(target, "Instance")) {
+		if (cooldowns.has(target)) return false;
+		cooldowns.add(target);
+		task.delay(1, () => cooldowns.delete(target));
 	}
 
 	const effectiveDur = config.autoDetectFling === false
 		? dur ?? math.clamp(configNumber("manualFlingDuration", 2), 0.25, 8)
 		: dur;
-	queue.push({ tgt, dur: effectiveDur, repeat: repeatMode, batch, batchToken, player: repeatMode ? playerFromTarget(tgt) : undefined });
-	doHighlight(tgt);
+	queue.push({ tgt: target, dur: effectiveDur, repeat: repeatMode, batch, batchToken, player: repeatMode ? targetPlayer : undefined });
+	doHighlight(target);
 	return true;
 }
 
@@ -3502,7 +3656,7 @@ track(runService.Stepped.Connect(() => updateAntiFling()));
 
 track(runService.PostSimulation.Connect(() => {
 	const wanted = skidHoldCFrame;
-	if (!wanted || method !== "skidfling" || queue[0] === undefined || !sessionModel) {
+	if (!wanted || queue[0] === undefined || !sessionModel) {
 		skidHoldCFrame = undefined;
 		return;
 	}
@@ -3512,8 +3666,7 @@ track(runService.PostSimulation.Connect(() => {
 		skidHoldCFrame = undefined;
 		return;
 	}
-	rp.CFrame = wanted;
-	char.PivotTo(wanted);
+	pivotRootTo(char, rp, wanted);
 }));
 
 // render
@@ -3608,16 +3761,13 @@ function tweenSkidCFrame(wanted: CFrame) {
 
 runtime.doFling = (rp: BasePart, hum: Humanoid, tgt: Tgt, cf: CFrame) => {
 	const tp = getPart(tgt);
-	const rep = flingPart(tgt) ?? tp;
 	const t = os.clock();
-	const orbit = new Vector3(math.sin(t * 95) * 0.12, math.cos(t * 83) * 0.08, math.cos(t * 101) * 0.12);
 
 	if (method === "skidfling") {
 		const base = skidTargetPart(tgt) ?? tp;
 		if (base) {
 			const wanted = tweenSkidCFrame(skidTargetCFrame(base));
-			rp.CFrame = wanted;
-			localPlayer.Character?.PivotTo(wanted);
+			pivotRootTo(localPlayer.Character, rp, wanted);
 			skidHoldCFrame = wanted;
 			restoreAntiFlingCollision();
 			enableSkidFlingCollision(localPlayer.Character);
@@ -3641,15 +3791,35 @@ runtime.doFling = (rp: BasePart, hum: Humanoid, tgt: Tgt, cf: CFrame) => {
 	}
 
 	if (tp !== undefined) {
-		pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", rep));
+		pcall(() => sethiddenproperty(rp, "PhysicsRepRootPart", tp));
 	}
-	rp.CFrame = cf.add(orbit) as CFrame;
-	rp.Velocity = Vector3.zero;
-	rp.RotVelocity = Vector3.zero;
-	rp.AssemblyLinearVelocity = Vector3.zero;
-	rp.AssemblyAngularVelocity = Vector3.zero;
+	if (runtime.simRadiusActive !== true) {
+		const [simOk, sim] = pcall(() => gethiddenproperty(localPlayer, "SimulationRadius"));
+		const [maxOk, max] = pcall(() => gethiddenproperty(localPlayer, "MaximumSimulationRadius"));
+		if (simOk && typeIs(sim, "number")) runtime.simulationRadius = sim;
+		if (maxOk && typeIs(max, "number")) runtime.maximumSimulationRadius = max;
+		runtime.simRadiusActive = true;
+	}
+	pcall(() => sethiddenproperty(localPlayer, "SimulationRadius", 1e9));
+	pcall(() => sethiddenproperty(localPlayer, "MaximumSimulationRadius", 1e9));
+	const wanted = tp?.CFrame ?? cf;
+	pivotRootTo(localPlayer.Character, rp, wanted);
+	skidHoldCFrame = wanted;
+	restoreAntiFlingCollision();
+	enableSkidFlingCollision(localPlayer.Character);
+	const huge = new Vector3(math.sin(t * 160) >= 0 ? 1e25 : -1e25, 1e25, math.cos(t * 160) >= 0 ? 1e25 : -1e25);
+	const spin = new Vector3(huge.Z * 2e6, huge.X * 2e6, -2e31);
+	for (const obj of localPlayer.Character?.GetDescendants() ?? []) {
+		if (obj.IsA("BasePart")) {
+			obj.Velocity = huge;
+			obj.RotVelocity = spin;
+			obj.AssemblyLinearVelocity = huge;
+			obj.AssemblyAngularVelocity = spin;
+		}
+	}
 
-	pcall(() => sethiddenproperty(hum, "MoveDirectionInternal", new Vector3(0 / 0, 0 / 0, 0 / 0)));
+	hum.SetStateEnabled(Enum.HumanoidStateType.Seated, false);
+	pcall(() => sethiddenproperty(hum, "MoveDirectionInternal", Vector3.zero));
 	pcall(() => sethiddenproperty(hum, "NetworkHumanoidState", Enum.HumanoidStateType.Freefall));
 };
 
@@ -3684,7 +3854,6 @@ track(runService.PreSimulation.Connect(() => {
 	if (done) { finishCurrentItem(true); return; }
 
 	busy = true;
-	if (method !== "skidfling") noCollideTarget(item.tgt);
 	runtime.doFling?.(rp, hum, item.tgt, cf);
 }));
 
